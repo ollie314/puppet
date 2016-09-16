@@ -310,7 +310,7 @@ class Checker4_0 < Evaluator::LiteralEvaluator
   end
 
   # Only used for function names, grammar should not be able to produce something faulty, but
-  # check anyway if model is created programatically (it will fail in transformation to AST for sure).
+  # check anyway if model is created programmatically (it will fail in transformation to AST for sure).
   def check_NamedAccessExpression(o)
     name = o.right_expr
     unless name.is_a? Model::QualifiedName
@@ -349,7 +349,7 @@ class Checker4_0 < Evaluator::LiteralEvaluator
   # for 'class', 'define', and function
   def check_NamedDefinition(o)
     top(o.eContainer, o)
-    if o.name !~ Patterns::CLASSREF
+    if o.name !~ Patterns::CLASSREF_DECL
       acceptor.accept(Issues::ILLEGAL_DEFINITION_NAME, o, {:name=>o.name})
     end
     internal_check_reserved_type_name(o, o.name)
@@ -358,6 +358,9 @@ class Checker4_0 < Evaluator::LiteralEvaluator
 
   def check_TypeAlias(o)
     top(o.eContainer, o)
+    if o.name !~ Patterns::CLASSREF_EXT_DECL
+      acceptor.accept(Issues::ILLEGAL_DEFINITION_NAME, o, {:name=>o.name})
+    end
     internal_check_reserved_type_name(o, o.name)
     internal_check_type_ref(o, o.type_expr)
   end
@@ -415,6 +418,7 @@ class Checker4_0 < Evaluator::LiteralEvaluator
 
   def check_FunctionDefinition(o)
     check_NamedDefinition(o)
+    internal_check_return_type(o)
     internal_check_parameter_name_uniqueness(o)
   end
 
@@ -432,6 +436,11 @@ class Checker4_0 < Evaluator::LiteralEvaluator
     internal_check_parameter_name_uniqueness(o)
     internal_check_reserved_params(o)
     internal_check_no_idem_last(o)
+  end
+
+  def internal_check_return_type(o)
+    r = o.return_type
+    internal_check_type_ref(o, r) unless r.nil?
   end
 
   def internal_check_type_ref(o, r)
@@ -512,6 +521,7 @@ class Checker4_0 < Evaluator::LiteralEvaluator
 
   def check_LambdaExpression(o)
     internal_check_capture_last(o)
+    internal_check_return_type(o)
   end
 
   def check_LiteralList(o)

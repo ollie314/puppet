@@ -1,5 +1,44 @@
 module Puppet::Pops
 module Evaluator
+  class Jumper < Exception
+    attr_reader :value
+    attr_reader :file
+    attr_reader :line
+    def initialize(value, file, line)
+      @value = value
+      @file = file
+      @line = line
+    end
+  end
+
+  class Next < Jumper
+    def initialize(value, file, line)
+      super
+    end
+  end
+
+  class Return < Jumper
+    def initialize(value, file, line)
+      super
+    end
+  end
+
+  class PuppetStopIteration < StopIteration
+    attr_reader :file
+    attr_reader :line
+    attr_reader :pos
+
+    def initialize(file, line, pos = nil)
+      @file = file
+      @line = line
+      @pos = pos
+    end
+
+    def message
+      "break() from context where this is illegal"
+    end
+  end
+
 # A Closure represents logic bound to a particular scope.
 # As long as the runtime (basically the scope implementation) has the behavior of Puppet 3x it is not
 # safe to return and later use this closure.
@@ -18,16 +57,15 @@ class Closure < CallableSignature
   attr_reader :model
   attr_reader :enclosing_scope
 
-  def initialize(evaluator, model, scope)
+  def initialize(evaluator, model)
     @evaluator = evaluator
     @model = model
-    @enclosing_scope = scope
   end
 
   # Evaluates a closure in its enclosing scope after having matched given arguments with parameters (from left to right)
   # @api public
   def call(*args)
-    call_with_scope(@enclosing_scope, args)
+    call_with_scope(enclosing_scope, args)
   end
 
   # This method makes a Closure compatible with a Dispatch. This is used when the closure is wrapped in a Function
@@ -35,16 +73,17 @@ class Closure < CallableSignature
   # checks of the argument type/arity validity).
   # @api private
   def invoke(instance, calling_scope, args, &block)
-    @enclosing_scope.with_global_scope do |global_scope|
+    enclosing_scope.with_global_scope do |global_scope|
       call_with_scope(global_scope, args, &block)
     end
   end
 
   # Call closure with argument assignment by name
   def call_by_name(args_hash, enforce_parameters)
+    closure_scope = enclosing_scope
     if enforce_parameters
       # Push a temporary parameter scope used while resolving the parameter defaults
-      @enclosing_scope.with_parameter_scope(parameter_names) do |param_scope|
+      closure_scope.with_parameter_scope(closure_name, parameter_names) do |param_scope|
         # Assign all non-nil values, even those that represent non-existent paramaters.
         args_hash.each { |k, v| param_scope[k] = v unless v.nil? }
         parameters.each do |p|
@@ -56,16 +95,22 @@ class Closure < CallableSignature
               # No default. Assign nil if the args_hash included it
               param_scope[name] = nil if args_hash.include?(name)
             else
-              param_scope[name] = param_scope.evaluate(name, p.value, @enclosing_scope, @evaluator)
+              param_scope[name] = param_scope.evaluate(name, p.value, closure_scope, @evaluator)
             end
           end
         end
         args_hash = param_scope.to_hash
       end
       Types::TypeMismatchDescriber.validate_parameters(closure_name, params_struct, args_hash)
+      result = catch(:next) do
+        @evaluator.evaluate_block_with_bindings(closure_scope, args_hash, @model.body)
+      end
+      Types::TypeAsserter.assert_instance_of(nil, return_type, result) do
+        "value returned from #{closure_name}"
+      end
+    else
+      @evaluator.evaluate_block_with_bindings(closure_scope, args_hash, @model.body)
     end
-
-    @evaluator.evaluate_block_with_bindings(@enclosing_scope, args_hash, @model.body)
   end
 
   def parameters
@@ -82,6 +127,10 @@ class Closure < CallableSignature
   # @api public
   def parameter_names
     @model.parameters.collect(&:name)
+  end
+
+  def return_type
+    @return_type ||= create_return_type
   end
 
   # @api public
@@ -113,14 +162,47 @@ class Closure < CallableSignature
     CLOSURE_NAME
   end
 
+  class Dynamic < Closure
+    def initialize(evaluator, model, scope)
+      @enclosing_scope = scope
+      super(evaluator, model)
+    end
+
+    def enclosing_scope
+      @enclosing_scope
+    end
+
+    def call(*args)
+      # A return from an unnamed closure is treated as a return from the context evaluating
+      # calling this closure - that is, as if it was the return call itself.
+      #
+      jumper = catch(:return) do
+        return call_with_scope(enclosing_scope, args)
+      end
+      raise jumper
+    end
+  end
+
   class Named < Closure
-    def initialize(name, evaluator, model, scope)
+    def initialize(name, evaluator, model)
       @name = name
-      super(evaluator, model, scope)
+      super(evaluator, model)
     end
 
     def closure_name
       @name
+    end
+
+    # The assigned enclosing scope, or global scope if enclosing scope was initialized to nil
+    #
+    def enclosing_scope
+      # Named closures are typically used for puppet functions and they cannot be defined
+      # in an enclosing scope as they are cashed and reused. They need to bind to the
+      # global scope at time of use rather at time of definition.
+      # Unnamed closures are always a runtime construct, they are never bound by a loader
+      # and are thus garbage collected at end of a compilation.
+      #
+      Puppet.lookup(:global_scope) { {} }
     end
   end
 
@@ -139,14 +221,19 @@ class Closure < CallableSignature
     end)
 
     if type.callable?(final_args)
-      @evaluator.evaluate_block_with_bindings(scope, variable_bindings, @model.body)
+      result = catch(:next) do
+        @evaluator.evaluate_block_with_bindings(scope, variable_bindings, @model.body)
+      end
+      Types::TypeAsserter.assert_instance_of(nil, return_type, result) do
+        "value returned from #{closure_name}"
+      end
     else
       raise ArgumentError, Types::TypeMismatchDescriber.describe_signatures(closure_name, [self], final_args)
     end
   end
 
   def combine_values_with_parameters(scope, args)
-    scope.with_parameter_scope(parameter_names) do |param_scope|
+    scope.with_parameter_scope(closure_name, parameter_names) do |param_scope|
       parameters.each_with_index do |parameter, index|
         param_captures     = parameter.captures_rest
         default_expression = parameter.value
@@ -194,10 +281,13 @@ class Closure < CallableSignature
 
   def create_callable_type()
     types = []
-    range = [0, 0]
+    from = 0
+    to = 0
     in_optional_parameters = false
+    closure_scope = enclosing_scope
+
     parameters.each do |param|
-      type, param_range = create_param_type(param)
+      type, param_range = create_param_type(param, closure_scope)
 
       types << type
 
@@ -207,23 +297,20 @@ class Closure < CallableSignature
         @evaluator.fail(Issues::REQUIRED_PARAMETER_AFTER_OPTIONAL, param, { :param_name => param.name })
       end
 
-      range[0] += param_range[0]
-      range[1] += param_range[1]
+      from += param_range[0]
+      to += param_range[1]
     end
-
-    if range[1] == Float::INFINITY
-      range[1] = :default
-    end
-
-    Types::TypeFactory.callable(*(types + range))
+    param_types = Types::PTupleType.new(types, Types::PIntegerType.new(from, to))
+    Types::PCallableType.new(param_types, nil, return_type)
   end
 
   def create_params_struct
     type_factory = Types::TypeFactory
     members = {}
+    closure_scope = enclosing_scope
 
     parameters.each do |param|
-      arg_type, param_range = create_param_type(param)
+      arg_type, param_range = create_param_type(param, closure_scope)
       key_type = type_factory.string(nil, param.name.to_s)
       key_type = type_factory.optional(key_type) unless param.value.nil?
       members[key_type] = arg_type
@@ -231,9 +318,17 @@ class Closure < CallableSignature
     type_factory.struct(members)
   end
 
-  def create_param_type(param)
+  def create_return_type
+    if @model.return_type
+      @evaluator.evaluate(@model.return_type, @enclosing_scope)
+    else
+      Types::PAnyType::DEFAULT
+    end
+  end
+
+  def create_param_type(param, closure_scope)
     type = if param.type_expr
-             @evaluator.evaluate(param.type_expr, @enclosing_scope)
+             @evaluator.evaluate(param.type_expr, closure_scope)
            else
              Types::PAnyType::DEFAULT
            end

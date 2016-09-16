@@ -153,6 +153,22 @@ describe 'Puppet Type System' do
     end
   end
 
+  context 'Enum type' do
+    it 'sorts its entries' do
+      code = <<-CODE
+        Enum[c,b,a].each |$e| { notice $e }
+      CODE
+      expect(eval_and_collect_notices(code)).to eq(['a', 'b', 'c'])
+    end
+
+    it 'makes entries unique' do
+      code = <<-CODE
+        Enum[a,b,c,b,a].each |$e| { notice $e }
+      CODE
+      expect(eval_and_collect_notices(code)).to eq(['a', 'b', 'c'])
+    end
+  end
+
   context 'Iterable type' do
     it 'can be parameterized with element type' do
       code = <<-CODE
@@ -337,7 +353,7 @@ describe 'Puppet Type System' do
     end
 
     it 'can be created with a runtime and, puppet name pattern, and runtime replacement' do
-      expect(tf.runtime('ruby', [/^MyPackage::(.*)$/, 'MyModule::\1']).to_s).to eq("Runtime[ruby, [/^MyPackage::(.*)$/, 'MyModule::\\1']]")
+      expect(tf.runtime('ruby', [/^MyPackage::(.*)$/, 'MyModule::\1']).to_s).to eq("Runtime[ruby, [/^MyPackage::(.*)$/, \"MyModule::\\\\1\"]]")
     end
 
     it 'will map a Puppet name to a runtime type' do
@@ -424,7 +440,7 @@ describe 'Puppet Type System' do
       type Foo = Variant[Foo,String,Integer]
       assert_type(Foo, /x/)
       CODE
-      expect { eval_and_collect_notices(code) }.to raise_error(/expected a value of type String or Integer, got Regexp/)
+      expect { eval_and_collect_notices(code) }.to raise_error(/expects a value of type String or Integer, got Regexp/)
     end
 
     it 'will handle a scalar correctly in combinations of nested aliased variants' do
@@ -526,7 +542,7 @@ describe 'Puppet Type System' do
         type Integer = String
         notice 'hello' =~ Integer
       CODE
-      expect{ eval_and_collect_notices(code) }.to raise_error(/Attempt to redefine entity 'type\/integer'. Originally set by Puppet-Type-System\/Static-Loader/)
+      expect{ eval_and_collect_notices(code) }.to raise_error(/Attempt to redefine entity 'http:\/\/puppet\.com\/2016\.1\/runtime\/type\/integer'. Originally set by Puppet-Type-System\/Static-Loader/)
     end
   end
 

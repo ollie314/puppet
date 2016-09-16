@@ -17,6 +17,8 @@ describe Puppet::Type.type(:group).provider(:windows_adsi), :if => Puppet.featur
   before :each do
     Puppet::Util::Windows::ADSI.stubs(:computer_name).returns('testcomputername')
     Puppet::Util::Windows::ADSI.stubs(:connect).returns connection
+    # this would normally query the system, but not needed for these tests
+    Puppet::Util::Windows::ADSI::Group.stubs(:localized_domains).returns([])
   end
 
   describe ".instances" do
@@ -72,6 +74,10 @@ describe Puppet::Type.type(:group).provider(:windows_adsi), :if => Puppet.featur
       context "when auth_membership => true" do
         before :each do
           resource[:auth_membership] = true
+        end
+
+        it "should return true when current and should contain the same users in a different order" do
+          expect(provider.members_insync?(['user1', 'user2', 'user3'], ['user3', 'user1', 'user2'])).to be_truthy
         end
 
         it "should return false when current is nil" do
@@ -274,6 +280,14 @@ describe Puppet::Type.type(:group).provider(:windows_adsi), :if => Puppet.featur
   end
 
   it "should prefer the domain component from the resolved SID" do
-    expect(provider.members_to_s(['.\Administrators'])).to eq('BUILTIN\Administrators')
+    # must lookup well known S-1-5-32-544 as actual 'Administrators' name may be localized
+    admins_sid_bytes = [1, 2, 0, 0, 0, 0, 0, 5, 32, 0, 0, 0, 32, 2, 0, 0]
+    admins_group = Puppet::Util::Windows::SID::Principal.lookup_account_sid(admins_sid_bytes)
+    # prefix just the name like .\Administrators
+    converted = provider.members_to_s([".\\#{admins_group.account}"])
+
+    # and ensure equivalent of BUILTIN\Administrators, without a leading .
+    expect(converted).to eq(admins_group.domain_account)
+    expect(converted[0]).to_not eq('.')
   end
 end

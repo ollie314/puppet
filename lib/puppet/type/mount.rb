@@ -14,8 +14,7 @@ module Puppet
 
       **Autorequires:** If Puppet is managing any parents of a mount resource ---
       that is, other mount points higher up in the filesystem --- the child
-      mount will autorequire them. If Puppet is managing the file path of a
-      mount point, the mount resource will autorequire it.
+      mount will autorequire them.
 
       **Autobefores:**  If Puppet is managing any child file paths of a mount
       point, the mount resource will autobefore them."
@@ -177,6 +176,50 @@ module Puppet
         appear in fstab. For many platforms this is a comma delimited string.
         Consult the fstab(5) man page for system-specific details."
 
+          def insync?(is)
+
+            if @resource[:ensure] == :mounted && !provider.property_hash[:live_options].nil?
+
+              # The mount options according to /etc/fstab. It is possible for puppet to
+              # update this file to reflect new options even if the remount to update
+              # the options has actually failed
+              fstab_options = provider.property_hash[:options] || ''
+              # The mount options according to the output of the 'mount' command. These will
+              # always reflect the options of the actual mounted device
+              mount_options = provider.property_hash[:live_options] || ''
+              # The desired mount options that have been specified in the puppet manifest
+              resource_options = @resource[:options] || ''
+
+              mount_list = mount_options.split(',')
+              resource_list = resource_options.split(',')
+              # Remove the string 'defaults' from the list of resources, because when
+              # we are comparing against the mount command output 'defaults' will be
+              # expanded into the full list of default options for the OS and file system
+              resource_list.delete('defaults')
+
+              # Do the options in fstab match the options that the user has defined?
+              if fstab_options != resource_options
+                return false
+              end
+
+              # Do the options provided by the 'mount' command match the options that
+              # the user has defined? We have to check this too because fstab could provide
+              # a false positive if a remount has failed
+              #
+              # We want to see if the mount command options contain the list of user
+              # specified options from the manifest. The reason we cannot do a 1:1
+              # comparison is because the expanded list of default options may be included
+              # in the mount output. These vary between OS and file system so since we don't
+              # have a good way to find out what they are, just check for the specific options
+              # the user has specified
+              if !(resource_list - mount_list).empty?
+                return false
+              end
+            end
+
+            super
+          end
+
       validate do |value|
         raise Puppet::Error, "options must not contain whitespace: #{value}" if value =~ /\s/
         raise Puppet::Error, "options must not be an empty string" if value.empty?
@@ -297,14 +340,11 @@ module Puppet
       dependencies[0..-2]
     end
 
-    # Autorequire the mount point's file resource
-    autorequire(:file) { Pathname.new(self[:name]) }
-
     # Autobefore the mount point's child file paths
     autobefore(:file) do
       dependencies = []
       file_resources = catalog.resources.select { |resource| resource.type == :file }
-      children_file_resources = file_resources.select { |resource| File.expand_path(resource[:path]) =~ %r(#{self[:name]}/.) }
+      children_file_resources = file_resources.select { |resource| File.expand_path(resource[:path]) =~ %r(^#{self[:name]}/.) }
       children_file_resources.each do |child|
         dependencies.push Pathname.new(child[:path])
       end

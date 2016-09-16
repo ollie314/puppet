@@ -57,7 +57,7 @@ module Puppet::Util::Windows::ADSI
     end
 
     # This method should *only* be used to generate WinNT://<SID> style monikers
-    # used for IAdsGroup::Add / IAdsGroup::Remove.  These URIs are not useable
+    # used for IAdsGroup::Add / IAdsGroup::Remove.  These URIs are not usable
     # to resolve an account with WIN32OLE.connect
     # Valid input is a SID::Principal, S-X-X style SID string or any valid
     # account name with or without domain prefix
@@ -107,8 +107,19 @@ module Puppet::Util::Windows::ADSI
   end
 
   module Shared
+    def localized_domains
+      @localized_domains ||= [
+        # localized version of BUILTIN
+        # for instance VORDEFINIERT on German Windows
+        Puppet::Util::Windows::SID.sid_to_name('S-1-5-32').upcase,
+        # localized version of NT AUTHORITY (can't use S-1-5)
+        # for instance AUTORITE NT on French Windows
+        Puppet::Util::Windows::SID.name_to_sid_object('SYSTEM').domain.upcase
+      ]
+    end
+
     def uri(name, host = '.')
-      host = '.' if ['NT AUTHORITY', 'BUILTIN', Socket.gethostname].include?(host)
+      host = '.' if (localized_domains << Socket.gethostname.upcase).include?(host.upcase)
 
       # group or user
       account_type = self.name.split('::').last.downcase
@@ -184,7 +195,10 @@ module Puppet::Util::Windows::ADSI
     end
 
     def [](attribute)
-      native_user.Get(attribute)
+      value = native_user.Get(attribute)
+      # Rubys WIN32OLE errantly converts UTF-16 values to Encoding.default_external
+      return value.encode(Encoding::UTF_8) if value.is_a?(String)
+      value
     end
 
     def []=(attribute, value)
@@ -234,7 +248,8 @@ module Puppet::Util::Windows::ADSI
       # https://msdn.microsoft.com/en-us/library/aa746342.aspx
       # WIN32OLE objects aren't enumerable, so no map
       groups = []
-      native_user.Groups.each {|g| groups << g.Name} rescue nil
+      # Rubys WIN32OLE errantly converts UTF-16 values to Encoding.default_external
+      native_user.Groups.each {|g| groups << g.Name.encode(Encoding::UTF_8)} rescue nil
       groups
     end
 
@@ -320,6 +335,10 @@ module Puppet::Util::Windows::ADSI
       user_name
     end
 
+    def self.current_user_sid
+      Puppet::Util::Windows::SID.name_to_sid_object(current_user_name)
+    end
+
     def self.exists?(name_or_sid)
       well_known = false
       if (sid = Puppet::Util::Windows::SID.name_to_sid_object(name_or_sid))
@@ -353,7 +372,8 @@ module Puppet::Util::Windows::ADSI
 
       users = []
       wql.each do |u|
-        users << new(u.name)
+        # Rubys WIN32OLE errantly converts UTF-16 values to Encoding.default_external
+        users << new(u.name.encode(Encoding::UTF_8))
       end
 
       users.each(&block)
@@ -377,7 +397,7 @@ module Puppet::Util::Windows::ADSI
         Puppet::Util::Windows::ADSI.wmi_connection.Delete("Win32_UserProfile.SID='#{sid}'")
       rescue WIN32OLERuntimeError => e
         # https://social.technet.microsoft.com/Forums/en/ITCG/thread/0f190051-ac96-4bf1-a47f-6b864bfacee5
-        # Prior to Vista SP1, there's no builtin way to programmatically
+        # Prior to Vista SP1, there's no built-in way to programmatically
         # delete user profiles (except for delprof.exe). So try to delete
         # but warn if we fail
         raise e unless e.message.include?('80041010')
@@ -445,7 +465,8 @@ module Puppet::Util::Windows::ADSI
     def members
       # WIN32OLE objects aren't enumerable, so no map
       members = []
-      native_group.Members.each {|m| members << m.Name}
+      # Rubys WIN32OLE errantly converts UTF-16 values to Encoding.default_external
+      native_group.Members.each {|m| members << m.Name.encode(Encoding::UTF_8)}
       members
     end
 
@@ -514,7 +535,8 @@ module Puppet::Util::Windows::ADSI
 
       groups = []
       wql.each do |g|
-        groups << new(g.name)
+        # Rubys WIN32OLE errantly converts UTF-16 values to Encoding.default_external
+        groups << new(g.name.encode(Encoding::UTF_8))
       end
 
       groups.each(&block)

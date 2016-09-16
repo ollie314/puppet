@@ -26,12 +26,16 @@ require 'puppet_spec/language'
 
     let (:compiler) { Puppet::Parser::Compiler.new(Puppet::Node.new('specification')) }
 
+    let (:topscope) { compiler.topscope }
+
     def collect_notices(code)
       logs = []
       Puppet[:code] = code
       Puppet::Util::Log.with_destination(Puppet::Test::LogCollector.new(logs)) do
-        compiler.compile
-        yield
+          compiler.compile do |catalog|
+            yield
+            catalog
+          end
       end
       logs.select { |log| log.level == :notice }.map { |log| log.message }
     end
@@ -120,7 +124,7 @@ require 'puppet_spec/language'
       end
 
       it 'fails when no value is provided for required first parameter', :if => call_type == 'EPP' do
-        expect_fail(params, [], /default expression for \$b tries to illegally access not yet evaluated \$a/)
+        expect_fail(params, [], /expects a value for parameter \$a/)
       end
 
       it "will use the referenced parameter's given value" do

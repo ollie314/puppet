@@ -41,7 +41,24 @@ class Puppet::Pops::Functions::Function
   #
   # @api public
   def call(scope, *args, &block)
-    self.class.dispatcher.dispatch(self, scope, args, &block)
+    begin
+      result = catch(:return) do
+        return self.class.dispatcher.dispatch(self, scope, args, &block)
+      end
+      return result.value
+    rescue Puppet::Pops::Evaluator::Next => jumper
+      begin
+        throw :next, jumper.value
+      rescue Puppet::Parser::Scope::UNCAUGHT_THROW_EXCEPTION => uncaught
+        raise Puppet::ParseError.new("next() from context where this is illegal", jumper.file, jumper.line)
+      end
+    rescue Puppet::Pops::Evaluator::Return => jumper
+      begin
+        throw :return, jumper
+      rescue Puppet::Parser::Scope::UNCAUGHT_THROW_EXCEPTION => uncaught
+        raise Puppet::ParseError.new("return() from context where this is illegal", jumper.file, jumper.line)
+      end
+    end
   end
 
   # Allows the implementation of a function to call other functions by name. The callable functions
@@ -55,6 +72,11 @@ class Puppet::Pops::Functions::Function
   # @api public
   def call_function(function_name, *args, &block)
     internal_call_function(closure_scope, function_name, args, &block)
+  end
+
+  def closure_scope
+    # If closure scope is explicitly set to not nil, if there is a global scope, otherwise an empty hash
+    @closure_scope || Puppet.lookup(:global_scope) { {} }
   end
 
   # The dispatcher for the function

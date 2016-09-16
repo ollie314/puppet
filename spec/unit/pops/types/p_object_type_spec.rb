@@ -7,14 +7,14 @@ module Types
 describe 'The Object Type' do
   include PuppetSpec::Compiler
 
-  let(:parser) { TypeParser.new }
+  let(:parser) { TypeParser.singleton }
   let(:pp_parser) { Parser::EvaluatingParser.new }
   let(:loader) { Loader::BaseLoader.new(nil, 'type_parser_unit_test_loader') }
   let(:factory) { TypeFactory }
 
   def type_object_t(name, body_string)
     object = PObjectType.new(name, pp_parser.parse_string("{#{body_string}}").current.body)
-    loader.set_entry(Loader::Loader::TypedName.new(:type, name.downcase), object)
+    loader.set_entry(Loader::TypedName.new(:type, name.downcase), object)
     object
   end
 
@@ -31,7 +31,7 @@ describe 'The Object Type' do
         }
       OBJECT
       expect { parse_object('MyObject', obj) }.to raise_error(TypeAssertionError,
-        /attribute MyObject\[a\] had wrong type, expected a Type value, got Integer/)
+        /attribute MyObject\[a\] has wrong type, expects a Type value, got Integer/)
     end
 
     it 'raises an error if the type is missing' do
@@ -41,7 +41,7 @@ describe 'The Object Type' do
         }
       OBJECT
       expect { parse_object('MyObject', obj) }.to raise_error(TypeAssertionError,
-        /expected a value for key 'type'/)
+        /expects a value for key 'type'/)
     end
 
     it 'raises an error when value is of incompatible type' do
@@ -51,7 +51,7 @@ describe 'The Object Type' do
         }
       OBJECT
       expect { parse_object('MyObject', obj) }.to raise_error(TypeAssertionError,
-        /attribute MyObject\[a\] value had wrong type, expected an Integer value, got String/)
+        /attribute MyObject\[a\] value has wrong type, expects an Integer value, got String/)
     end
 
     it 'raises an error if the kind is invalid' do
@@ -61,7 +61,7 @@ describe 'The Object Type' do
         }
       OBJECT
       expect { parse_object('MyObject', obj) }.to raise_error(TypeAssertionError,
-        /expected a match for Enum\['constant', 'derived', 'given_or_derived'\], got 'derivd'/)
+        /expects a match for Enum\['constant', 'derived', 'given_or_derived'\], got 'derivd'/)
     end
 
     it 'stores value in attribute' do
@@ -155,7 +155,7 @@ describe 'The Object Type' do
         }
       OBJECT
       expect { parse_object('MyObject', obj) }.to raise_error(TypeAssertionError,
-        /function MyObject\[a\] had wrong type, expected a Type\[Callable\] value, got Type\[String\]/)
+        /function MyObject\[a\] has wrong type, expects a Type\[Callable\] value, got Type\[String\]/)
     end
 
     it 'raises an error when a function has the same name as an attribute' do
@@ -494,7 +494,7 @@ describe 'The Object Type' do
         a => Integer
       }
     OBJECT
-    expect { parse_object('MyObject', obj) }.to raise_error(TypeAssertionError, /object initializer had wrong type, unrecognized key 'attribrutes'/)
+    expect { parse_object('MyObject', obj) }.to raise_error(TypeAssertionError, /object initializer has wrong type, unrecognized key 'attribrutes'/)
   end
 
   it 'raises an error when attribute contains invalid keys' do
@@ -503,7 +503,7 @@ describe 'The Object Type' do
         a => { type => Integer, knid => constant }
       }
     OBJECT
-    expect { parse_object('MyObject', obj) }.to raise_error(TypeAssertionError, /initializer for attribute MyObject\[a\] had wrong type, unrecognized key 'knid'/)
+    expect { parse_object('MyObject', obj) }.to raise_error(TypeAssertionError, /initializer for attribute MyObject\[a\] has wrong type, unrecognized key 'knid'/)
   end
 
   context 'when inheriting from a another Object type' do
@@ -1053,6 +1053,48 @@ describe 'The Object Type' do
         CODE
         expect(eval_and_collect_notices(code)).to eql(['3', 'the first constant', 'hi', '34'])
       end
+    end
+  end
+
+  context 'is assigned to all PAnyType classes such that' do
+    include_context 'types_setup'
+
+    def find_parent(tc, parent_name)
+      p = tc._ptype
+      while p.is_a?(PObjectType) && p.name != parent_name
+        p = p.parent
+      end
+      expect(p).to be_a(PObjectType), "did not find #{parent_name} in parent chain of #{tc.name}"
+      p
+    end
+
+    it 'the class has a _ptype method' do
+      all_types.each do |tc|
+        expect(tc).to respond_to(:_ptype).with(0).arguments
+      end
+    end
+
+    it 'the _ptype method returns a PObjectType instance' do
+      all_types.each do |tc|
+        expect(tc._ptype).to be_a(PObjectType)
+      end
+    end
+
+    it 'the instance returned by _ptype is a descendant from Pcore::AnyType' do
+      all_types.each { |tc| expect(find_parent(tc, 'Pcore::AnyType').name).to eq('Pcore::AnyType') }
+    end
+
+    it 'PScalarType classes _ptype returns a descendant from Pcore::ScalarType' do
+      scalar_types.each { |tc| expect(find_parent(tc, 'Pcore::ScalarType').name).to eq('Pcore::ScalarType') }
+    end
+
+    it 'PNumericType classes _ptype returns a descendant from Pcore::NumberType' do
+      numeric_types.each { |tc| expect(find_parent(tc, 'Pcore::NumericType').name).to eq('Pcore::NumericType') }
+    end
+
+    it 'PCollectionType classes _ptype returns a descendant from Pcore::CollectionType' do
+      coll_descendants = collection_types - [PTupleType, PStructType]
+      coll_descendants.each { |tc| expect(find_parent(tc, 'Pcore::CollectionType').name).to eq('Pcore::CollectionType') }
     end
   end
 end

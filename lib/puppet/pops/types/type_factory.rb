@@ -40,6 +40,13 @@ module TypeFactory
     PFloatType::DEFAULT
   end
 
+  # Produces the Sensitive type
+  # @api public
+  #
+  def self.sensitive(type = nil)
+    PSensitiveType.new(type)
+  end
+
   # Produces the Numeric type
   # @api public
   #
@@ -157,6 +164,32 @@ module TypeFactory
     hash.nil? || hash.empty? ? PObjectType::DEFAULT : PObjectType.new(hash)
   end
 
+  def self.type_set(hash = nil)
+    hash.nil? || hash.empty? ? PTypeSetType::DEFAULT : PTypeSetType.new(hash)
+  end
+
+  def self.timestamp(*args)
+    case args.size
+    when 0
+      PTimestampType::DEFAULT
+    when 1
+      PTimestampType.new(args[0], args[0])
+    else
+      PTimestampType.new(*args)
+    end
+  end
+
+  def self.timespan(*args)
+    case args.size
+    when 0
+      PTimespanType::DEFAULT
+    when 1
+      PTimespanType.new(args[0], args[0])
+    else
+      PTimespanType.new(*args)
+    end
+  end
+
   def self.tuple(types = [], size_type = nil)
     PTupleType.new(types.map {|elem| type_of(elem) }, size_type)
   end
@@ -181,13 +214,7 @@ module TypeFactory
   # @api public
   #
   def self.regexp(pattern = nil)
-    if pattern
-      t = PRegexpType.new(pattern.is_a?(Regexp) ? pattern.inspect[1..-2] : pattern)
-      t.regexp unless pattern.nil? # compile pattern to catch errors
-      t
-    else
-      PRegexpType::DEFAULT
-    end
+    pattern ?  PRegexpType.new(pattern) : PRegexpType::DEFAULT
   end
 
   def self.pattern(*regular_expressions)
@@ -199,10 +226,7 @@ module TypeFactory
         re_t
 
       when Regexp
-        # Regep.to_s includes options user did not enter and does not escape source
-        # to work either as a string or as a // regexp. The inspect method does a better
-        # job, but includes the //
-        PRegexpType.new(re.inspect[1..-2])
+        PRegexpType.new(re)
 
       when PRegexpType
         re
@@ -248,6 +272,12 @@ module TypeFactory
   # Params are given as a sequence of arguments to {#type_of}.
   #
   def self.callable(*params)
+    if params.size == 2 && params[0].is_a?(Array)
+      return_t = type_of(params[1])
+      params = params[0]
+    else
+      return_t = nil
+    end
     last_callable = TypeCalculator.is_kind_of_callable?(params.last)
     block_t = last_callable ? params.pop : nil
 
@@ -270,7 +300,7 @@ module TypeFactory
     end
     # create a signature
     tuple_t = tuple(types, size_type)
-    PCallableType.new(tuple_t, block_t)
+    PCallableType.new(tuple_t, block_t, return_t)
   end
 
   # Produces the abstract type Collection
@@ -299,6 +329,12 @@ module TypeFactory
     PDefaultType::DEFAULT
   end
 
+  # Creates an instance of the Binary type
+  # @api public
+  def self.binary
+    PBinaryType::DEFAULT
+  end
+
   # Produces an instance of the abstract type PCatalogEntryType
   def self.catalog_entry
     PCatalogEntryType::DEFAULT
@@ -311,7 +347,7 @@ module TypeFactory
 
   # Produces an instance of the SemVer type
   def self.sem_ver(*ranges)
-    ranges.empty? ? PSemVerType::DEFAULT : PSemVerType::new(*ranges)
+    ranges.empty? ? PSemVerType::DEFAULT : PSemVerType::new(ranges)
   end
 
   # Produces a PResourceType with a String type_name A PResourceType with a nil

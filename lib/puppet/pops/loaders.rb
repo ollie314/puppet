@@ -1,4 +1,13 @@
 module Puppet::Pops
+# This is the container for all Loader instances. Each Loader instance has a `loader_name` by which it can be uniquely
+# identified within this container.
+# A Loader can be private or public. In general, code will have access to the private loader associated with the
+# location of the code. It will be parented by a loader that in turn have access to other public loaders that
+# can load only such entries that have been publicly available. The split between public and private is not
+# yet enforced in Puppet.
+#
+# The name of a private loader should always end with ' private'
+#
 class Loaders
   class LoaderError < Puppet::Error; end
 
@@ -8,7 +17,22 @@ class Loaders
   attr_reader :private_environment_loader
   attr_reader :implementation_registry
 
+  def self.new(environment)
+    obj = environment.loaders
+    if obj.nil?
+      obj = self.allocate
+      obj.send(:initialize, environment)
+    end
+    obj
+  end
+
   def initialize(environment)
+    # Protect against environment havoc
+    raise ArgumentError.new("Attempt to redefine already initialized loaders for environment") unless environment.loaders.nil?
+    environment.loaders = self
+    @loaders_by_name = {}
+
+    add_loader_by_name(self.class.static_loader)
 
     # Create the set of loaders
     # 1. Puppet, loads from the "running" puppet - i.e. bundled functions, types, extension points and extensions
@@ -60,17 +84,17 @@ class Loaders
     loaders.nil? ? nil : loaders.implementation_registry
   end
 
-  def register_implementations(*obj_classes)
+  def register_implementations(obj_classes, name_authority)
     loader = @private_environment_loader
     types = obj_classes.map do |obj_class|
       type = obj_class._ptype
-      typed_name = Loader::Loader::TypedName.new(:type, type.name.downcase)
+      typed_name = Loader::TypedName.new(:type, type.name.downcase, name_authority)
       entry = loader.loaded_entry(typed_name)
       loader.set_entry(typed_name, type, obj_class._plocation) if entry.nil? || entry.value.nil?
       type
     end
-    # Resolve lazy so that all types can cross reference eachother
-    parser = Types::TypeParser.new
+    # Resolve lazy so that all types can cross reference each other
+    parser = Types::TypeParser.singleton
     types.each { |type| type.resolve(parser, loader) }
   end
 
@@ -85,7 +109,7 @@ class Loaders
     unless loaders.nil?
       name = name.to_s
       caps_name = Types::TypeFormatter.singleton.capitalize_segments(name)
-      typed_name = Loader::Loader::TypedName.new(:type, name.downcase)
+      typed_name = Loader::TypedName.new(:type, name.downcase)
       loaders.runtime3_type_loader.set_entry(typed_name, Types::PResourceType.new(caps_name), origin)
     end
     nil
@@ -100,6 +124,21 @@ class Loaders
     loaders = Puppet.lookup(:loaders) { nil }
     raise Puppet::ParseError, "Internal Error: Puppet Context ':loaders' missing" if loaders.nil?
     loaders
+  end
+
+  # Lookup a loader by its unique name.
+  #
+  # @param [String] loader_name the name of the loader to lookup
+  # @return [Loader] the found loader
+  # @raise [Puppet::ParserError] if no loader is found
+  def [](loader_name)
+    loader = @loaders_by_name[loader_name]
+    if loader.nil?
+      # Unable to find the module private loader. Try resolving the module
+      loader = private_loader_for_module(loader_name[0..-9]) if loader_name.end_with?(' private')
+      raise Puppet::ParseError, "Unable to find loader named '#{loader_name}'" if loader.nil?
+    end
+    loader
   end
 
   # Finds the appropriate loader for the given `module_name`, or for the environment in case `module_name`
@@ -160,6 +199,12 @@ class Loaders
     md.private_loader
   end
 
+  def add_loader_by_name(loader)
+    name = loader.loader_name
+    raise Puppet::ParseError, "Internal Error: Attempt to redefine loader named '#{name}'" if @loaders_by_name.include?(name)
+    @loaders_by_name[name] = loader
+  end
+
   private
 
   def create_puppet_system_loader()
@@ -183,19 +228,20 @@ class Loaders
     # Puppet binder currently reads confdir/bindings - that is bad, it should be using the new environment support.
 
     # The environment is not a namespace, so give it a nil "module_name"
-    module_name = nil
     loader_name = "environment:#{environment.name}"
+    # env_conf is setup from the environment_dir value passed into Puppet::Environments::Directories.new
     env_conf = Puppet.lookup(:environments).get_conf(environment.name)
+    env_path = env_conf.nil? || !env_conf.is_a?(Puppet::Settings::EnvironmentConf) ? nil : env_conf.path_to_env
 
     # Create the 3.x resource type loader
-    @runtime3_type_loader = Loader::Runtime3TypeLoader.new(puppet_system_loader, environment)
+    @runtime3_type_loader = add_loader_by_name(Loader::Runtime3TypeLoader.new(puppet_system_loader, self, environment, env_conf.nil? ? nil : env_path))
 
-    if env_conf.nil? || !env_conf.is_a?(Puppet::Settings::EnvironmentConf)
+    if env_path.nil?
       # Not a real directory environment, cannot work as a module TODO: Drop when legacy env are dropped?
-      loader = Loader::SimpleEnvironmentLoader.new(@runtime3_type_loader, loader_name)
+      loader = add_loader_by_name(Loader::SimpleEnvironmentLoader.new(@runtime3_type_loader, loader_name))
     else
       # View the environment as a module to allow loading from it - this module is always called 'environment'
-      loader = Loader::ModuleLoaders.module_loader_from(@runtime3_type_loader, self, 'environment', env_conf.path_to_env)
+      loader = Loader::ModuleLoaders.module_loader_from(@runtime3_type_loader, self, 'environment', env_path)
     end
 
     # An environment has a module path even if it has a null loader
@@ -206,7 +252,7 @@ class Loaders
     # Code in the environment gets to see all modules (since there is no metadata for the environment)
     # but since this is not given to the module loaders, they can not load global code (since they can not
     # have prior knowledge about this
-    loader = Loader::DependencyLoader.new(loader, "environment", @module_resolver.all_module_loaders())
+    loader = add_loader_by_name(Loader::DependencyLoader.new(loader, 'environment private', @module_resolver.all_module_loaders()))
 
     # The module loader gets the private loader via a lazy operation to look up the module's private loader.
     # This does not work for an environment since it is not resolved the same way.
@@ -217,7 +263,7 @@ class Loaders
   end
 
   def configure_loaders_for_modules(parent_loader, environment)
-    @module_resolver = mr = ModuleResolver.new()
+    @module_resolver = mr = ModuleResolver.new(self)
     environment.modules.each do |puppet_module|
       # Create data about this module
       md = LoaderModuleData.new(puppet_module)
@@ -239,7 +285,6 @@ class Loaders
   #
   class LoaderModuleData
 
-    attr_accessor :state
     attr_accessor :public_loader
     attr_accessor :private_loader
     attr_accessor :resolutions
@@ -250,7 +295,6 @@ class Loaders
     # @param puppet_module [Puppet::Module] the module instance for the module being represented
     #
     def initialize(puppet_module)
-      @state = :initial
       @puppet_module = puppet_module
       @resolutions = []
       @public_loader = nil
@@ -270,7 +314,7 @@ class Loaders
     end
 
     def resolved?
-      @state == :resolved
+      !@private_loader.nil?
     end
 
     def restrict_to_dependencies?
@@ -290,7 +334,8 @@ class Loaders
   #
   class ModuleResolver
 
-    def initialize()
+    def initialize(loaders)
+      @loaders = loaders
       @index = {}
       @all_module_loaders = nil
     end
@@ -309,7 +354,7 @@ class Loaders
 
     def resolve(module_data)
       if module_data.resolved?
-        return
+        nil
       else
         module_data.private_loader =
           if module_data.restrict_to_dependencies?
@@ -325,7 +370,7 @@ class Loaders
     def create_loader_with_all_modules_visible(from_module_data)
       Puppet.debug{"ModuleLoader: module '#{from_module_data.name}' has unknown dependencies - it will have all other modules visible"}
 
-      Loader::DependencyLoader.new(from_module_data.public_loader, from_module_data.name, all_module_loaders())
+      @loaders.add_loader_by_name(Loader::DependencyLoader.new(from_module_data.public_loader, "#{from_module_data.name} private", all_module_loaders()))
     end
 
     def create_loader_with_only_dependencies_visible(from_module_data)
@@ -345,7 +390,7 @@ class Loaders
         end
       end
       dependency_loaders = from_module_data.dependency_names.collect { |name| @index[name].public_loader }
-      Loader::DependencyLoader.new(from_module_data.public_loader, from_module_data.name, dependency_loaders)
+      @loaders.add_loader_by_name(Loader::DependencyLoader.new(from_module_data.public_loader, "#{from_module_data.name} private", dependency_loaders))
     end
   end
 end

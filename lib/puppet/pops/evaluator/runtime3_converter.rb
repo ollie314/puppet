@@ -112,6 +112,18 @@ class Runtime3Converter
   end
   alias :convert2_SemVerRange :convert_SemVerRange
 
+  def convert_Timespan(o, scope, undef_value)
+    # Puppet 3x cannot handle Timespans. Use the string form
+    o.to_s
+  end
+  alias :convert2_Timespan :convert_Timespan
+
+  def convert_Timestamp(o, scope, undef_value)
+    # Puppet 3x cannot handle Timestamps. Use the string form
+    o.to_s
+  end
+  alias :convert2_Timestamp :convert_Timestamp
+
   def convert_Symbol(o, scope, undef_value)
     case o
       # Support :undef since it may come from a 3x structure
@@ -138,8 +150,9 @@ class Runtime3Converter
     # due to Puppet::Resource's idiosyncratic behavior where some references must be
     # absolute and others cannot be.
     # Thus there is no need to call scope.resolve_type_and_titles to do dynamic lookup.
-
-    Puppet::Resource.new(*catalog_type_to_split_type_title(o))
+    t, title = catalog_type_to_split_type_title(o)
+    t = Runtime3ResourceSupport.find_resource_type(scope, t) unless t == 'class' || t == 'node'
+    Puppet::Resource.new(t, title)
   end
   alias :convert2_PCatalogEntryType :convert_PCatalogEntryType
 

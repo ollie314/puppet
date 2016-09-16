@@ -170,7 +170,7 @@ describe "when performing lookup" do
     it 'will not accept a succesful lookup of an undef value when the type rejects it' do
       expect do
         assemble_and_compile('${r}', "'abc::n'", 'String')
-      end.to raise_error(Puppet::ParseError, /Found value had wrong type, expected a String value, got Undef/)
+      end.to raise_error(Puppet::ParseError, /Found value has wrong type, expects a String value, got Undef/)
     end
 
     it 'will raise an exception when value is not found for array key and no default is provided' do
@@ -249,7 +249,7 @@ describe "when performing lookup" do
         expect do
           assemble_and_compile('${r[a]}_${r[b]}', "'abc::x'", 'Hash[String,String]', 'undef', "{'a' => 'dflt_x', 'b' => 32}")
         end.to raise_error(Puppet::ParseError,
-          /Default value had wrong type, entry 'b' expected a String value, got Integer/)
+          /Default value has wrong type, entry 'b' expects a String value, got Integer/)
       end
     end
 
@@ -283,7 +283,7 @@ describe "when performing lookup" do
         expect do
           assemble_and_compile_with_block('${r[a]}_${r[b]}', "{'a' => 'dflt_x', 'b' => 32}", "'abc::x'", 'Hash[String,String]')
         end.to raise_error(Puppet::ParseError,
-          /Value returned from default block had wrong type, entry 'b' expected a String value, got Integer/)
+          /Value returned from default block has wrong type, entry 'b' expects a String value, got Integer/)
       end
 
       it 'receives a single name parameter' do
@@ -558,7 +558,7 @@ EOS
     it 'will explain deep merge results without options' do
       assemble_and_compile('${r}', "'abc::a'") do |scope|
         lookup_invocation = Puppet::Pops::Lookup::Invocation.new(scope, {}, {}, true)
-        Puppet::Pops::Lookup.lookup('abc::e', Puppet::Pops::Types::TypeParser.new.parse('Hash[String,String]'), nil, false, 'deep', lookup_invocation)
+        Puppet::Pops::Lookup.lookup('abc::e', Puppet::Pops::Types::TypeParser.singleton.parse('Hash[String,String]'), nil, false, 'deep', lookup_invocation)
         expect(lookup_invocation.explainer.to_s).to eq(<<EOS)
 Merge strategy deep
   Data Binding "hiera"
@@ -586,7 +586,7 @@ EOS
       assemble_and_compile('${r}', "'abc::a'") do |scope|
         Hiera.any_instance.expects(:lookup).with(any_parameters).returns({'k1' => 'global_g1'})
         lookup_invocation = Puppet::Pops::Lookup::Invocation.new(scope, {}, {}, true)
-        Puppet::Pops::Lookup.lookup('abc::e', Puppet::Pops::Types::TypeParser.new.parse('Hash[String,String]'), nil, false, {'strategy' => 'deep', 'merge_hash_arrays' => true}, lookup_invocation)
+        Puppet::Pops::Lookup.lookup('abc::e', Puppet::Pops::Types::TypeParser.singleton.parse('Hash[String,String]'), nil, false, {'strategy' => 'deep', 'merge_hash_arrays' => true}, lookup_invocation)
         expect(lookup_invocation.explainer.to_s).to eq(<<EOS)
 Merge strategy deep
   Options: {
@@ -645,7 +645,7 @@ EOS
     it 'will explain value access caused by dot notation in key' do
       assemble_and_compile('${r}', "'abc::a'") do |scope|
         lookup_invocation = Puppet::Pops::Lookup::Invocation.new(scope, {}, {}, true)
-        Puppet::Pops::Lookup.lookup('abc::f.k1.s1', Puppet::Pops::Types::TypeParser.new.parse('String'), nil, false, nil, lookup_invocation)
+        Puppet::Pops::Lookup.lookup('abc::f.k1.s1', Puppet::Pops::Types::TypeParser.singleton.parse('String'), nil, false, nil, lookup_invocation)
         expect(lookup_invocation.explainer.to_s).to eq(<<EOS)
 Merge strategy first
   Data Binding "hiera"
@@ -667,7 +667,7 @@ EOS
     it 'will provide a hash containing all explanation elements' do
       assemble_and_compile('${r}', "'abc::a'") do |scope|
         lookup_invocation = Puppet::Pops::Lookup::Invocation.new(scope, {}, {}, true)
-        Puppet::Pops::Lookup.lookup('abc::e', Puppet::Pops::Types::TypeParser.new.parse('Hash[String,String]'), nil, false, {'strategy' => 'deep', 'merge_hash_arrays' => true}, lookup_invocation)
+        Puppet::Pops::Lookup.lookup('abc::e', Puppet::Pops::Types::TypeParser.singleton.parse('Hash[String,String]'), nil, false, {'strategy' => 'deep', 'merge_hash_arrays' => true}, lookup_invocation)
         expect(lookup_invocation.explainer.to_hash).to eq(
             {
               :branches => [

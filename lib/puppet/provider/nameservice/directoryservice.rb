@@ -22,6 +22,12 @@ class Puppet::Provider::NameService::DirectoryService < Puppet::Provider::NameSe
   confine :feature         => :cfpropertylist
   defaultfor :operatingsystem => :darwin
 
+  # There is no generalized mechanism for provider cache management, but we can
+  # use post_resource_eval, which will be run for each suitable provider at the
+  # end of each transaction. Use this to clear @all_present after each run.
+  def self.post_resource_eval
+    @all_present = nil
+  end
 
   # JJM 2007-07-25: This map is used to map NameService attributes to their
   #     corresponding DirectoryService attribute names.
@@ -63,7 +69,7 @@ class Puppet::Provider::NameService::DirectoryService < Puppet::Provider::NameSe
   def self.instances
     # JJM Class method that provides an array of instance objects of this
     #     type.
-    # JJM: Properties are dependent on the Puppet::Type we're managine.
+    # JJM: Properties are dependent on the Puppet::Type we're managing.
     type_property_array = [:name] + @resource_type.validproperties
 
     # Create a new instance of this Puppet::Type for each object present
@@ -87,13 +93,15 @@ class Puppet::Provider::NameService::DirectoryService < Puppet::Provider::NameSe
   end
 
   def self.list_all_present
-    # JJM: List all objects of this Puppet::Type already present on the system.
-    begin
-      dscl_output = execute(get_exec_preamble("-list"))
-    rescue Puppet::ExecutionFailure
-      fail("Could not get #{@resource_type.name} list from DirectoryService")
+    @all_present ||= begin
+      # JJM: List all objects of this Puppet::Type already present on the system.
+      begin
+        dscl_output = execute(get_exec_preamble("-list"))
+      rescue Puppet::ExecutionFailure
+        fail("Could not get #{@resource_type.name} list from DirectoryService")
+      end
+      dscl_output.split("\n")
     end
-    dscl_output.split("\n")
   end
 
   def self.parse_dscl_plist_data(dscl_output)
@@ -102,7 +110,7 @@ class Puppet::Provider::NameService::DirectoryService < Puppet::Provider::NameSe
 
   def self.generate_attribute_hash(input_hash, *type_properties)
     attribute_hash = {}
-    input_hash.keys.each do |key|
+    input_hash.each_key do |key|
       ds_attribute = key.sub("dsAttrTypeStandard:", "")
       next unless (ds_to_ns_attribute_map.keys.include?(ds_attribute) and type_properties.include? ds_to_ns_attribute_map[ds_attribute])
       ds_value = input_hash[key]
@@ -126,7 +134,7 @@ class Puppet::Provider::NameService::DirectoryService < Puppet::Provider::NameSe
 
     # NBK: need to read the existing password here as it's not actually
     # stored in the user record. It is stored at a path that involves the
-    # UUID of the user record for non-Mobile local acccounts.
+    # UUID of the user record for non-Mobile local accounts.
     # Mobile Accounts are out of scope for this provider for now
     attribute_hash[:password] = self.get_password(attribute_hash[:guid], attribute_hash[:name]) if @resource_type.validproperties.include?(:password) and Puppet.features.root?
     attribute_hash
@@ -167,8 +175,8 @@ class Puppet::Provider::NameService::DirectoryService < Puppet::Provider::NameSe
 
     command_vector = [ command(:dscl), "-plist", "." ]
 
-    # JJM: The actual action to perform.  See "man dscl"
-    #      Common actiosn: -create, -delete, -merge, -append, -passwd
+    # JJM: The actual action to perform. See "man dscl".
+    #      Common actions: -create, -delete, -merge, -append, -passwd
     command_vector << ds_action
     # JJM: get_ds_path will spit back "Users" or "Groups",
     # etc...  Depending on the Puppet::Type of our self.
@@ -186,7 +194,7 @@ class Puppet::Provider::NameService::DirectoryService < Puppet::Provider::NameSe
     # 10.7 uses salted SHA512 password hashes which are 128 characters plus
     # an 8 character salt. Previous versions used a SHA1 hash padded with
     # zeroes. If someone attempts to use a password hash that worked with
-    # a previous version of OX X, we will fail early and warn them.
+    # a previous version of OS X, we will fail early and warn them.
     if password_hash.length != 136
       fail("OS X 10.7 requires a Salted SHA512 hash password of 136 characters. \
            Please check your password and try again.")

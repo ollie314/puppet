@@ -9,8 +9,6 @@ class AccessOperator
   #
   include Runtime3Support
 
-  EMPTY_STRING = ''.freeze
-
   attr_reader :semantic
 
   # Initialize with AccessExpression to enable reporting issues
@@ -32,6 +30,10 @@ class AccessOperator
     fail(Issues::OPERATOR_NOT_APPLICABLE, @semantic.left_expr, :operator=>'[]', :left_value => o)
   end
 
+  def access_Binary(o, scope, keys)
+    Puppet::Pops::Types::PBinaryType::Binary.from_binary_string(access_String(o.binary_buffer, scope, keys))
+  end
+
   def access_String(o, scope, keys)
     keys.flatten!
     result = case keys.size
@@ -39,8 +41,8 @@ class AccessOperator
       fail(Issues::BAD_STRING_SLICE_ARITY, @semantic.left_expr, {:actual => keys.size})
     when 1
       # Note that Ruby 1.8.7 requires a length of 1 to produce a String
-      k1 = coerce_numeric(keys[0], @semantic.keys[0], scope)
-      bad_access_key_type(o, 0, k1, Integer) unless k1.is_a?(Integer)
+      k1 = Utils.to_n(keys[0])
+      bad_string_access_key_type(o, 0, k1.nil? ? keys[0] : k1) unless k1.is_a?(Integer)
       k2 = 1
       k1 = k1 < 0 ? o.length + k1 : k1           # abs pos
       # if k1 is outside, a length of 1 always produces an empty string
@@ -50,9 +52,9 @@ class AccessOperator
         o[ k1, k2 ]
       end
     when 2
-      k1 = coerce_numeric(keys[0], @semantic.keys[0], scope)
-      k2 = coerce_numeric(keys[1], @semantic.keys[1], scope)
-      [k1, k2].each_with_index { |k,i| bad_access_key_type(o, i, k, Integer) unless k.is_a?(Integer) }
+      k1 = Utils.to_n(keys[0])
+      k2 = Utils.to_n(keys[1])
+      [k1, k2].each_with_index { |k,i| bad_string_access_key_type(o, i, k.nil? ? keys[i] : k) unless k.is_a?(Integer) }
 
       k1 = k1 < 0 ? o.length + k1 : k1           # abs pos (negative is count from end)
       k2 = k2 < 0 ? o.length - k1 + k2 + 1 : k2  # abs length (negative k2 is length from pos to end count)
@@ -160,6 +162,18 @@ class AccessOperator
     Types::TypeFactory.sem_ver(*keys)
   end
 
+  def access_PTimestampType(o, scope, keys)
+    keys.flatten!
+    fail(Issues::BAD_TYPE_SLICE_ARITY, @semantic, :base_type => o, :min=>0, :max => 2, :actual => keys.size) if keys.size > 2
+    Types::TypeFactory.timestamp(*keys)
+  end
+
+  def access_PTimespanType(o, scope, keys)
+    keys.flatten!
+    fail(Issues::BAD_TYPE_SLICE_ARITY, @semantic, :base_type => o, :min=>0, :max => 2, :actual => keys.size) if keys.size > 2
+    Types::TypeFactory.timespan(*keys)
+  end
+
   def access_PTupleType(o, scope, keys)
     keys.flatten!
     if Types::TypeFactory.is_range_parameter?(keys[-2]) && Types::TypeFactory.is_range_parameter?(keys[-1])
@@ -174,6 +188,14 @@ class AccessOperator
   end
 
   def access_PCallableType(o, scope, keys)
+    if keys.size > 0 && keys[0].is_a?(Array)
+      unless keys.size == 2
+        fail(Issues::BAD_TYPE_SLICE_ARITY, @semantic, :base_type => o, :min=>2, :max => 2, :actual => keys.size)
+      end
+      unless keys[1].is_a?(Types::PAnyType)
+        bad_type_specialization_key_type(o, 1, k, Types::PAnyType)
+      end
+    end
     Types::TypeFactory.callable(*keys)
   end
 
@@ -223,6 +245,13 @@ class AccessOperator
     })
   end
 
+  def bad_string_access_key_type(lhs, key_index, actual)
+    fail(Issues::BAD_STRING_SLICE_KEY_TYPE, @semantic.keys[key_index], {
+      :left_value => lhs,
+      :actual_type => bad_key_type_name(actual),
+    })
+  end
+
   def bad_key_type_name(actual)
     case actual
     when nil
@@ -266,12 +295,34 @@ class AccessOperator
     end
   end
 
+  def access_PSensitiveType(o, scope, keys)
+    keys.flatten!
+    if keys.size == 1
+      type = keys[0]
+      unless type.is_a?(Types::PAnyType)
+        fail(Issues::BAD_TYPE_SLICE_TYPE, @semantic.keys[0], {:base_type => 'Sensitive-Type', :actual => type.class})
+      end
+      Types::PSensitiveType.new(type)
+    else
+      fail(Issues::BAD_TYPE_SLICE_ARITY, @semantic, {:base_type => 'Sensitive-Type', :min => 1, :actual => keys.size})
+    end
+  end
+
   def access_PObjectType(o, scope, keys)
     keys.flatten!
     if keys.size == 1
       Types::TypeFactory.object(keys[0])
     else
       fail(Issues::BAD_TYPE_SLICE_ARITY, @semantic, {:base_type => 'Object-Type', :min => 1, :actual => keys.size})
+    end
+  end
+
+  def access_PTypeSetType(o, scope, keys)
+    keys.flatten!
+    if keys.size == 1
+      Types::TypeFactory.type_set(keys[0])
+    else
+      fail(Issues::BAD_TYPE_SLICE_ARITY, @semantic, {:base_type => 'TypeSet-Type', :min => 1, :actual => keys.size})
     end
   end
 
@@ -597,11 +648,13 @@ class AccessOperator
       #
       result = keys.each_with_index.map do |c, i|
         name = if c.is_a?(Types::PResourceType) && !c.type_name.nil? && c.title.nil?
+                 strict_check(c, i)
                  # type_name is already downcase. Don't waste time trying to downcase again
                  c.type_name
                elsif c.is_a?(String)
                  c.downcase
                elsif c.is_a?(Types::PTypeReferenceType)
+                 strict_check(c, i)
                  c.type_string.downcase
                else
                  fail(Issues::ILLEGAL_HOSTCLASS_NAME, @semantic.keys[i], {:name => c})
@@ -634,6 +687,21 @@ class AccessOperator
     # returns single type as type, else an array of types
     return result_type_array ? result : result.pop
   end
+
+  # PUP-6083 - Using Class[Foo] is deprecated since an arbitrary foo will trigger a "resource not found"
+  # @api private
+  def strict_check(name, index)
+    if Puppet[:strict] != :off
+      msg = 'Upper cased class-name in a Class[<class-name>] is deprecated, class-name should be a lowercase string'
+      case Puppet[:strict]
+      when :error
+        fail(Issues::ILLEGAL_HOSTCLASS_NAME, @semantic.keys[index], {:name => name})
+      when :warning
+        Puppet.warn_once(:deprecation, 'ClassReferenceInUpperCase', msg)
+      end
+    end
+  end
+
 end
 end
 end

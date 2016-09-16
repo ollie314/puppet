@@ -100,7 +100,7 @@ Puppet::Type.type(:user).provide :directoryservice do
   # supported by the user type.
   def self.generate_attribute_hash(input_hash)
     attribute_hash = {}
-    input_hash.keys.each do |key|
+    input_hash.each_key do |key|
       ds_attribute = key.sub("dsAttrTypeStandard:", "")
       next unless ds_to_ns_attribute_map.keys.include?(ds_attribute)
       ds_value = input_hash[key]
@@ -121,7 +121,7 @@ Puppet::Type.type(:user).provide :directoryservice do
     end
     attribute_hash[:ensure]         = :present
     attribute_hash[:provider]       = :directoryservice
-    attribute_hash[:shadowhashdata] = get_attribute_from_dscl('Users', attribute_hash[:name], 'ShadowHashData')
+    attribute_hash[:shadowhashdata] = input_hash['dsAttrTypeNative:ShadowHashData']
 
     ##############
     # Get Groups #
@@ -141,16 +141,16 @@ Puppet::Type.type(:user).provide :directoryservice do
     ################################
     # Get Password/Salt/Iterations #
     ################################
-    if attribute_hash[:shadowhashdata].empty?
+    if attribute_hash[:shadowhashdata].nil? or attribute_hash[:shadowhashdata].empty?
       attribute_hash[:password] = '*'
     else
       embedded_binary_plist = get_embedded_binary_plist(attribute_hash[:shadowhashdata])
-      if embedded_binary_plist['SALTED-SHA512']
-        attribute_hash[:password] = get_salted_sha512(embedded_binary_plist)
-      else
+      if embedded_binary_plist['SALTED-SHA512-PBKDF2']
         attribute_hash[:password]   = get_salted_sha512_pbkdf2('entropy', embedded_binary_plist)
         attribute_hash[:salt]       = get_salted_sha512_pbkdf2('salt', embedded_binary_plist)
         attribute_hash[:iterations] = get_salted_sha512_pbkdf2('iterations', embedded_binary_plist)
+      elsif embedded_binary_plist['SALTED-SHA512']
+        attribute_hash[:password] = get_salted_sha512(embedded_binary_plist)
       end
     end
 
@@ -178,7 +178,7 @@ Puppet::Type.type(:user).provide :directoryservice do
   # plist library doesn't read binary plists, so we need to
   # extract the binary plist, convert it to XML, and return it.
   def self.get_embedded_binary_plist(shadow_hash_data)
-    embedded_binary_plist = Array(shadow_hash_data['dsAttrTypeNative:ShadowHashData'][0].delete(' ')).pack('H*')
+    embedded_binary_plist = Array(shadow_hash_data[0].delete(' ')).pack('H*')
     convert_binary_to_hash(embedded_binary_plist)
   end
 
@@ -367,7 +367,7 @@ Puppet::Type.type(:user).provide :directoryservice do
     # flushing the dscl cache to allow all dscl calls to get INTO the cache
     # first. This could be made faster (and avoid a sleep call) by finding
     # a way to enter calls into the dscl cache faster. A sleep time of 1
-    # second would intermittantly require a second Puppet run to set
+    # second would intermittently require a second Puppet run to set
     # properties, so 2 seconds seems to be the minimum working value.
     sleep 2
     flush_dscl_cache

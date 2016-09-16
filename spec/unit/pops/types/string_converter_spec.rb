@@ -5,6 +5,7 @@ describe 'The string converter' do
   let(:converter) { Puppet::Pops::Types::StringConverter.singleton }
   let(:factory) { Puppet::Pops::Types::TypeFactory }
   let(:format) { Puppet::Pops::Types::StringConverter::Format }
+  let(:binary) { Puppet::Pops::Types::PBinaryType::Binary }
 
   describe 'helper Format' do
     it 'parses a single character like "%d" as a format' do
@@ -115,18 +116,44 @@ describe 'The string converter' do
       expect(converter.convert('3.1415', string_formats)).to eq('3.1415')
     end
 
-    it 'The %p format for string produces quoted string' do
-      string_formats = { Puppet::Pops::Types::PStringType::DEFAULT => '%p'}
-      expect(converter.convert("hello\tworld", string_formats)).to eq('"hello\\tworld"')
+    context 'The %p format for string produces' do
+      let!(:string_formats) { { Puppet::Pops::Types::PStringType::DEFAULT => '%p'} }
+      it 'double quoted result for string that contains control characters' do
+         expect(converter.convert("hello\tworld.\r\nSun is brigth today.", string_formats)).to eq('"hello\\tworld.\\r\\nSun is brigth today."')
+      end
+
+      it 'singe quoted result for string that is plain ascii without \\, $ or control characters' do
+        expect(converter.convert('hello world', string_formats)).to eq("'hello world'")
+      end
+
+      it 'quoted 5-byte unicode chars' do
+        expect(converter.convert("smile \u{1f603}.", string_formats)).to eq('"smile \\u{1F603}."')
+      end
+
+      it 'quoted 2-byte unicode chars' do
+        expect(converter.convert("esc \u{1b}.", string_formats)).to eq('"esc \\u{1B}."')
+      end
+
+      it 'escape for $' do
+        expect(converter.convert('escape the $ sign', string_formats)).to eq('"escape the \$ sign"')
+      end
+
+      it 'escape for double qoute but not for single quote' do
+        expect(converter.convert('the \' single and " double quote', string_formats)).to eq('"the \' single and \\" double quote"')
+      end
+
+      it 'no escape for #' do
+        expect(converter.convert('do not escape #{x}', string_formats)).to eq('\'do not escape #{x}\'')
+      end
     end
 
     {
       '%s'   => 'hello::world',
-      '%p'   => '"hello::world"',
+      '%p'   => "'hello::world'",
       '%c'   => 'Hello::world',
-      '%#c'   => '"Hello::world"',
+      '%#c'   => "'Hello::world'",
       '%u'   => 'HELLO::WORLD',
-      '%#u'   => '"HELLO::WORLD"',
+      '%#u'   => "'HELLO::WORLD'",
     }.each do |fmt, result |
       it "the format #{fmt} produces #{result}" do
         string_formats = { Puppet::Pops::Types::PStringType::DEFAULT => fmt}
@@ -136,13 +163,25 @@ describe 'The string converter' do
 
     {
       '%c'   => 'Hello::world',
-      '%#c'  => '"Hello::world"',
+      '%#c'  => "'Hello::world'",
       '%d'   => 'hello::world',
-      '%#d'  => '"hello::world"',
+      '%#d'  => "'hello::world'",
     }.each do |fmt, result |
       it "the format #{fmt} produces #{result}" do
         string_formats = { Puppet::Pops::Types::PStringType::DEFAULT => fmt}
         expect(converter.convert('HELLO::WORLD', string_formats)).to eq(result)
+      end
+    end
+
+    {
+      [nil, '%.1p']  => 'u',
+      [nil, '%#.2p'] => '"u',
+      [:default, '%.1p'] => 'd',
+      [true, '%.2s'] => 'tr',
+      [true, '%.2y'] => 'ye',
+    }.each do |args, result |
+      it "the format #{args[1]} produces #{result} for value #{args[0]}" do
+        expect(converter.convert(*args)).to eq(result)
       end
     end
 
@@ -158,9 +197,9 @@ describe 'The string converter' do
     end
 
     {
-      '   a b  ' => '"a b"',
-      'a b  '    => '"a b"',
-      '   a b'   => '"a b"',
+      '   a b  ' => "'a b'",
+      'a b  '    => "'a b'",
+      '   a b'   => "'a b'",
     }.each do |input, result |
       it "the input #{input} is trimmed to #{result} by using format '%#t'" do
         string_formats = { Puppet::Pops::Types::PStringType::DEFAULT => '%#t'}
@@ -192,15 +231,13 @@ describe 'The string converter' do
 
     {
       '%4.2s'   => '  he',
-      '%4.2p'   => '  "h',
+      '%4.2p'   => "  'h",
       '%4.2c'   => '  He',
-      '%#4.2c'  => '  "H',
+      '%#4.2c'  => "  'H",
       '%4.2u'   => '  HE',
-      '%#4.2u'  => '  "H',
-      '%4.2c'   => '  He',
-      '%#4.2c'  => '  "H',
+      '%#4.2u'  => "  'H",
       '%4.2d'   => '  he',
-      '%#4.2d'  => '  "h',
+      '%#4.2d'  => "  'h"
     }.each do |fmt, result |
       it "width and precision can be combined with #{fmt}" do
         string_formats = { Puppet::Pops::Types::PStringType::DEFAULT => fmt}
@@ -580,30 +617,30 @@ describe 'The string converter' do
 
   context 'when converting array' do
     it 'the default string representation is using [] delimiters, joins with ',' and uses %p for values' do
-      expect(converter.convert(["hello", "world"], :default)).to eq('["hello", "world"]')
+      expect(converter.convert(["hello", "world"], :default)).to eq("['hello', 'world']")
     end
 
-    { "%s"  => '[1, "hello"]',
-      "%p"  => '[1, "hello"]',
-      "%a"  => '[1, "hello"]',
-      "%<a"  => '<1, "hello">',
-      "%[a"  => '[1, "hello"]',
-      "%(a"  => '(1, "hello")',
-      "%{a"  => '{1, "hello"}',
-      "% a"  => '1, "hello"',
+    { "%s"  => "[1, 'hello']",
+      "%p"  => "[1, 'hello']",
+      "%a"  => "[1, 'hello']",
+      "%<a"  => "<1, 'hello'>",
+      "%[a"  => "[1, 'hello']",
+      "%(a"  => "(1, 'hello')",
+      "%{a"  => "{1, 'hello'}",
+      "% a"  => "1, 'hello'",
 
       {'format' => '%(a',
         'separator' => ''
-      } => '(1 "hello")',
+      } => "(1 'hello')",
 
       {'format' => '%|a',
         'separator' => ''
-      } => '|1 "hello"|',
+      } => "|1 'hello'|",
 
-      {'format' => '%(a', 
-        'separator' => '', 
+      {'format' => '%(a',
+        'separator' => '',
         'string_formats' => {Puppet::Pops::Types::PIntegerType::DEFAULT => '%#x'}
-      } => '(0x1 "hello")',
+      } => "(0x1 'hello')",
     }.each do |fmt, result |
       it "the format #{fmt} produces #{result}" do
         string_formats = { Puppet::Pops::Types::PArrayType::DEFAULT => fmt}
@@ -614,7 +651,7 @@ describe 'The string converter' do
     it "multiple rules selects most specific" do
       short_array_t = factory.array_of(factory.integer, factory.range(1,2))
       long_array_t = factory.array_of(factory.integer, factory.range(3,100))
-      string_formats = { 
+      string_formats = {
         short_array_t => "%(a",
         long_array_t  => "%[a",
       }
@@ -715,27 +752,27 @@ describe 'The string converter' do
 
   context 'when converting hash' do
     it 'the default string representation is using {} delimiters, joins with '=>' and uses %p for values' do
-      expect(converter.convert({"hello" => "world"}, :default)).to eq('{"hello" => "world"}')
+      expect(converter.convert({"hello" => "world"}, :default)).to eq("{'hello' => 'world'}")
     end
 
-    { "%s"  => '{1 => "world"}',
-      "%p"  => '{1 => "world"}',
-      "%h"  => '{1 => "world"}',
-      "%a"  => '[[1, "world"]]',
-      "%<h"  => '<1 => "world">',
-      "%[h"  => '[1 => "world"]',
-      "%(h"  => '(1 => "world")',
-      "%{h"  => '{1 => "world"}',
-      "% h"  => '1 => "world"',
+    { "%s"  => "{1 => 'world'}",
+      "%p"  => "{1 => 'world'}",
+      "%h"  => "{1 => 'world'}",
+      "%a"  => "[[1, 'world']]",
+      "%<h"  => "<1 => 'world'>",
+      "%[h"  => "[1 => 'world']",
+      "%(h"  => "(1 => 'world')",
+      "%{h"  => "{1 => 'world'}",
+      "% h"  => "1 => 'world'",
 
       {'format' => '%(h',
         'separator2' => ' '
-      } => '(1 "world")',
+      } => "(1 'world')",
 
-      {'format' => '%(h', 
-        'separator2' => ' ', 
+      {'format' => '%(h',
+        'separator2' => ' ',
         'string_formats' => {Puppet::Pops::Types::PIntegerType::DEFAULT => '%#x'}
-      } => '(0x1 "world")',
+      } => "(0x1 'world')",
     }.each do |fmt, result |
       it "the format #{fmt} produces #{result}" do
         string_formats = { Puppet::Pops::Types::PHashType::DEFAULT => fmt}
@@ -743,17 +780,17 @@ describe 'The string converter' do
       end
     end
 
-    {  "%s"  => '{1 => "hello", 2 => "world"}',
+    {  "%s"  => "{1 => 'hello', 2 => 'world'}",
 
        {'format' => '%(h',
          'separator2' => ' '
-       } => '(1 "hello", 2 "world")',
+       } => "(1 'hello', 2 'world')",
 
-       {'format' => '%(h', 
-         'separator' => ' >>', 
-         'separator2' => ' <=> ', 
+       {'format' => '%(h',
+         'separator' => ' >>',
+         'separator2' => ' <=> ',
          'string_formats' => {Puppet::Pops::Types::PIntegerType::DEFAULT => '%#x'}
-       } => '(0x1 <=> "hello" >> 0x2 <=> "world")',
+       } => "(0x1 <=> 'hello' >> 0x2 <=> 'world')",
      }.each do |fmt, result |
        it "the format #{fmt} produces #{result}" do
          string_formats = { Puppet::Pops::Types::PHashType::DEFAULT => fmt}
@@ -770,9 +807,9 @@ describe 'The string converter' do
       # formatting matters here
       result = [
        "{",
-       "  1 => \"hello\",",
+       "  1 => 'hello',",
        "  2 => {",
-       "    3 => \"world\"",
+       "    3 => 'world'",
        "  }",
        "}"
        ].join("\n")
@@ -782,7 +819,7 @@ describe 'The string converter' do
 
     context "containing an array" do
       it 'the hash and array renders without breaks and indentation by default' do
-        result = '{1 => [1, 2, 3]}'
+        result = "{1 => [1, 2, 3]}"
         formatted = converter.convert({ 1 => [1, 2, 3] }, :default)
         expect(formatted).to eq(result)
       end
@@ -864,6 +901,94 @@ describe 'The string converter' do
       string_formats = { Puppet::Pops::Types::PRegexpType::DEFAULT => "%k"}
       converter.convert(/.*/, string_formats)
       end.to raise_error(/Illegal format 'k' specified for value of Regexp type - expected one of the characters 'rsp'/)
+    end
+  end
+
+  context 'when converting binary' do
+    let(:sample) { binary.from_binary_string('binary') }
+
+    it 'the binary is converted to strict base64 string unquoted by default (same as %B)' do
+      expect(converter.convert(sample, :default)).to eq("YmluYXJ5")
+    end
+
+    it 'the binary is converted using %p by default when contained in an array' do
+      expect(converter.convert([sample], :default)).to eq("[Binary(\"YmluYXJ5\")]")
+    end
+
+    it '%B formats in base64 strict mode (same as default)' do
+      string_formats = { Puppet::Pops::Types::PBinaryType::DEFAULT => '%B'}
+      expect(converter.convert(sample, string_formats)).to eq("YmluYXJ5")
+    end
+
+    it '%b formats in base64 relaxed mode, and adds newline' do
+      string_formats = { Puppet::Pops::Types::PBinaryType::DEFAULT => '%b'}
+      expect(converter.convert(sample, string_formats)).to eq("YmluYXJ5\n")
+    end
+
+    it '%u formats in base64 urlsafe mode' do
+      string_formats = { Puppet::Pops::Types::PBinaryType::DEFAULT => '%u'}
+      expect(converter.convert(binary.from_base64("++//"), string_formats)).to eq("--__")
+    end
+
+    it '%p formats with type name' do
+      string_formats = { Puppet::Pops::Types::PBinaryType::DEFAULT => '%p'}
+      expect(converter.convert(sample, string_formats)).to eq("Binary(\"YmluYXJ5\")")
+    end
+
+    it '%#s formats as quoted string with escaped non printable bytes' do
+      string_formats = { Puppet::Pops::Types::PBinaryType::DEFAULT => '%#s'}
+      expect(converter.convert(binary.from_base64("apa="), string_formats)).to eq("\"j\\x96\"")
+    end
+
+    it '%s formats as unquoted string with valid UTF-8 chars' do
+      string_formats = { Puppet::Pops::Types::PBinaryType::DEFAULT => '%s'}
+      # womans hat emoji is E318, a three byte UTF-8 char EE 8C 98
+      expect(converter.convert(binary.from_binary_string("\xEE\x8C\x98"), string_formats)).to eq("\uE318")
+    end
+
+    it '%s errors if given non UTF-8 bytes' do
+      string_formats = { Puppet::Pops::Types::PBinaryType::DEFAULT => '%s'}
+      expect {
+        converter.convert(binary.from_base64("apa="), string_formats)
+      }.to raise_error(Encoding::UndefinedConversionError)
+    end
+
+    { "%s"    => 'binary',
+      "%#s"   => '"binary"',
+      "%8s"   => '  binary',
+      "%.2s"  => 'bi',
+      "%-8s"  => 'binary  ',
+      "%p"    => 'Binary("YmluYXJ5")',
+      "%10p"  => 'Binary("  YmluYXJ5")',
+      "%-10p" => 'Binary("YmluYXJ5  ")',
+      "%.2p"  => 'Binary("Ym")',
+      "%b"    => "YmluYXJ5\n",
+      "%11b"  => "  YmluYXJ5\n",
+      "%-11b" => "YmluYXJ5\n  ",
+      "%.2b"  => "Ym",
+      "%B"    => "YmluYXJ5",
+      "%11B"  => "   YmluYXJ5",
+      "%-11B" => "YmluYXJ5   ",
+      "%.2B"  => "Ym",
+      "%u"    => "YmluYXJ5",
+      "%11u"  => "   YmluYXJ5",
+      "%-11u" => "YmluYXJ5   ",
+      "%.2u"  => "Ym",
+      "%t"    => 'Binary',
+      "%#t"   => '"Binary"',
+      "%8t"   => '  Binary',
+      "%-8t"  => 'Binary  ',
+      "%.3t"  => 'Bin',
+      "%T"    => 'BINARY',
+      "%#T"   => '"BINARY"',
+      "%8T"   => '  BINARY',
+      "%-8T"  => 'BINARY  ',
+      "%.3T"  => 'BIN',
+    }.each do |fmt, result |
+      it "the format #{fmt} produces #{result}" do
+        string_formats = { Puppet::Pops::Types::PBinaryType::DEFAULT => fmt}
+        expect(converter.convert(sample, string_formats)).to eq(result)
+      end
     end
   end
 

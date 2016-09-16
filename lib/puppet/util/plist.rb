@@ -1,4 +1,4 @@
-require 'cfpropertylist'
+require 'cfpropertylist' if Puppet.features.cfpropertylist?
 require 'puppet/util/execution'
 
 module Puppet::Util::Plist
@@ -33,7 +33,7 @@ module Puppet::Util::Plist
       # NOTE: We used IO.read originally to be Ruby 1.8.x compatible.
       if read_file_with_offset(file_path, binary_plist_magic_number.length) == binary_plist_magic_number
         plist_obj = new_cfpropertylist(:file => file_path)
-        convert_cfpropertylist_to_native_types(plist_obj)
+        return convert_cfpropertylist_to_native_types(plist_obj)
       else
         plist_data = open_file_with_args(file_path, "r:UTF-8")
         plist = parse_plist(plist_data, file_path)
@@ -45,22 +45,29 @@ module Puppet::Util::Plist
                                                   {:failonfail => true, :combine => true})
           return parse_plist(plist)
         rescue Puppet::ExecutionFailure => detail
-          Puppet.warning("Cannot read file #{path}; Puppet is skipping it.\n" + "Details: #{detail}")
+          Puppet.warning("Cannot read file #{file_path}; Puppet is skipping it.\n" + "Details: #{detail}")
         end
       end
+      return nil
     end
 
     # Read plist text using the CFPropertyList gem.
     def parse_plist(plist_data, file_path = '')
       bad_xml_doctype = /^.*<!DOCTYPE plist PUBLIC -\/\/Apple Computer.*$/
-      if plist_data =~ bad_xml_doctype
-        plist_data.gsub!( bad_xml_doctype, plist_xml_doctype )
-        Puppet.debug("Had to fix plist with incorrect DOCTYPE declaration: #{file_path}")
+      begin
+        if plist_data =~ bad_xml_doctype
+          plist_data.gsub!( bad_xml_doctype, plist_xml_doctype )
+          Puppet.debug("Had to fix plist with incorrect DOCTYPE declaration: #{file_path}")
+        end
+      rescue ArgumentError => e
+        Puppet.debug "Failed with #{e.class} on #{file_path}: #{e.inspect}"
+        return nil
       end
 
       begin
         plist_obj = new_cfpropertylist(:data => plist_data)
-      rescue CFFormatError => e
+      # CFPropertyList library will raise NoMethodError for invalid data
+      rescue CFFormatError, NoMethodError => e
         Puppet.debug "Failed with #{e.class} on #{file_path}: #{e.inspect}"
         return nil
       end
@@ -75,7 +82,7 @@ module Puppet::Util::Plist
       File.open(file, args).read
     end
 
-    # Helper method to assist in generating a new CFPropertList Plist. It's
+    # Helper method to assist in generating a new CFPropertyList Plist. It's
     # its own method for stubbing purposes
     #
     # @api private
@@ -83,7 +90,7 @@ module Puppet::Util::Plist
       CFPropertyList::List.new(plist_opts)
     end
 
-    # Helper method to assist in converting a native CFPropertList object to a
+    # Helper method to assist in converting a native CFPropertyList object to a
     # native Ruby object (hash). It's its own method for stubbing purposes
     #
     # @api private

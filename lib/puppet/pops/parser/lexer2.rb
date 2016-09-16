@@ -37,6 +37,7 @@ class Lexer2
   TOKEN_RBRACE       = [:RBRACE,       '}'.freeze,   1].freeze
   TOKEN_SELBRACE     = [:SELBRACE,     '{'.freeze,   1].freeze
   TOKEN_LPAREN       = [:LPAREN,       '('.freeze,   1].freeze
+  TOKEN_WSLPAREN     = [:WSLPAREN,     '('.freeze,   1].freeze
   TOKEN_RPAREN       = [:RPAREN,       ')'.freeze,   1].freeze
 
   TOKEN_EQUALS       = [:EQUALS,       '='.freeze,   1].freeze
@@ -219,7 +220,17 @@ class Lexer2
         end
       end,
       ']' => lambda { emit(TOKEN_RBRACK, @scanner.pos) },
-      '(' => lambda { emit(TOKEN_LPAREN, @scanner.pos) },
+      '(' => lambda do
+        before = @scanner.pos
+        # If first on a line, or only whitespace between start of line and '('
+        # then the token is special to avoid being taken as start of a call.
+        line_start = @lexing_context[:line_lexical_start]
+        if before == line_start || @scanner.string.byteslice(line_start, before - line_start) =~ /\A[[:blank:]\r]+\Z/
+          emit(TOKEN_WSLPAREN, before)
+        else
+          emit(TOKEN_LPAREN, before)
+        end
+      end,
       ')' => lambda { emit(TOKEN_RPAREN, @scanner.pos) },
       ';' => lambda { emit(TOKEN_SEMIC, @scanner.pos) },
       '?' => lambda { emit(TOKEN_QMARK, @scanner.pos) },
@@ -489,6 +500,7 @@ class Lexer2
         else
           @scanner.pos += 1
         end
+        ctx[:line_lexical_start] = @scanner.pos
         nil
       end,
       '' => lambda { nil } # when the peek(1) returns empty
@@ -656,6 +668,7 @@ class Lexer2
     @lexing_context = {
       :brace_count => 0,
       :after => nil,
+      :line_lexical_start => 0
     }
     appm_mode = Puppet[:app_management] ? :with_appm : :without_appm
     @appm_keywords = APP_MANAGEMENT_TOKENS[appm_mode]

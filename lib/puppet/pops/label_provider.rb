@@ -25,12 +25,12 @@ module Puppet::Pops::LabelProvider
     "#{article(text).capitalize} #{text}"
   end
 
-  # Produces a label for the given text with *definitie article* (the).
+  # Produces a label for the given text with *definite article* (the).
   def the o
     "the #{label(o)}"
   end
 
-  # Produces a label for the given text with *definitie article* (The).
+  # Produces a label for the given text with *definite article* (The).
   def the_uc o
     "The #{label(o)}"
   end
@@ -39,8 +39,6 @@ module Puppet::Pops::LabelProvider
   def plural_s(count, text = '')
     count == 1 ? text : "#{text}s"
   end
-
-  private
 
   # Produces an *indefinite article* (a/an) for the given text ('a' if
   # it starts with a vowel) This is obviously flawed in the general
@@ -51,6 +49,8 @@ module Puppet::Pops::LabelProvider
   def article s
     article_for_letter(first_letter_of(s))
   end
+
+  private
 
   def first_letter_of(string)
     char = string[0,1]

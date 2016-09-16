@@ -46,6 +46,15 @@ module ModuleLoaders
                                                        )
   end
 
+  def self.pcore_resource_type_loader_from(parent_loader, loaders, environment_path)
+    ModuleLoaders::FileBased.new(parent_loader,
+      loaders,
+      nil,
+      environment_path,
+      'pcore_resource_types'
+    )
+  end
+
   class AbstractPathBasedModuleLoader < BaseLoader
 
     # The name of the module, or nil, if this is a global "component"
@@ -66,6 +75,7 @@ module ModuleLoaders
 
     # Initialize a kind of ModuleLoader for one module
     # @param parent_loader [Loader] loader with higher priority
+    # @param loaders [Loaders] the container for this loader
     # @param module_name [String] the name of the module (non qualified name), may be nil for a global "component"
     # @param path [String] the path to the root of the module (semantics defined by subclass)
     # @param loader_name [String] a name that is used for human identification (useful when module_name is nil)
@@ -81,6 +91,7 @@ module ModuleLoaders
       unless (loadables - LOADABLE_KINDS).empty?
         raise ArgumentError, 'given loadables are not of supported loadable kind'
       end
+      loaders.add_loader_by_name(self)
     end
 
     def loadables
@@ -92,6 +103,9 @@ module ModuleLoaders
     # @return [Loader::NamedEntry, nil found/created entry, or nil if not found
     #
     def find(typed_name)
+      # This loader is tailored to only find entries in the current runtime
+      return nil unless typed_name.name_authority == Pcore::RUNTIME_NAME_AUTHORITY
+
       # Assume it is a global name, and that all parts of the name should be used when looking up
       name_part_index = 0
       name_parts = typed_name.name_parts
@@ -116,6 +130,7 @@ module ModuleLoaders
         case typed_name.type
         when :function
         when :resource_type
+        when :resource_type_pp
         when :type
         else
           # anything else cannot possibly be in this module
@@ -190,7 +205,7 @@ module ModuleLoaders
     def private_loader
       # The system loader has a nil module_name and it does not have a private_loader as there are no functions
       # that can only by called by puppet runtime - if so, it acts as the private loader directly.
-      @private_loader ||= ((module_name.nil? && self) || @loaders.private_loader_for_module(module_name))
+      @private_loader ||= (module_name.nil? || module_name == 'environment' ? self : @loaders.private_loader_for_module(module_name))
     end
   end
 

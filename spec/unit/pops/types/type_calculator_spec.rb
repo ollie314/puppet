@@ -208,6 +208,18 @@ describe 'The type calculator' do
       end
     end
 
+    context 'sensitive' do
+      it 'translates to PSensitiveType' do
+        expect(calculator.infer(PSensitiveType::Sensitive.new("hunter2")).class).to eq(PSensitiveType)
+      end
+    end
+
+    context 'binary' do
+      it 'translates to PBinaryType' do
+        expect(calculator.infer(PBinaryType::Binary.from_binary_string("binary")).class).to eq(PBinaryType)
+      end
+    end
+
     context 'version' do
       it 'translates to PVersionType' do
         expect(calculator.infer(Semantic::Version.new(1,0,0)).class).to eq(PSemVerType)
@@ -224,6 +236,34 @@ describe 'The type calculator' do
         expect(t.ranges.size).to eq(1)
         expect(t.ranges[0].min).to eq(v)
         expect(t.ranges[0].max).to eq(v)
+      end
+    end
+
+    context 'timespan' do
+      it 'translates to PTimespanType' do
+        expect(calculator.infer(Time::Timespan.from_fields_hash('days' => 2))).to be_a(PTimespanType)
+      end
+
+      it 'translates to a limited PTimespanType by infer_set' do
+        ts = Time::Timespan.from_fields_hash('days' => 2)
+        t = calculator.infer_set(ts)
+        expect(t.class).to eq(PTimespanType)
+        expect(t.from).to be(ts)
+        expect(t.to).to be(ts)
+      end
+    end
+
+    context 'timestamp' do
+      it 'translates to PTimespanType' do
+        expect(calculator.infer(Time::Timestamp.now)).to be_a(PTimestampType)
+      end
+
+      it 'translates to a limited PTimespanType by infer_set' do
+        ts = Time::Timestamp.now
+        t = calculator.infer_set(ts)
+        expect(t.class).to eq(PTimestampType)
+        expect(t.from).to be(ts)
+        expect(t.to).to be(ts)
       end
     end
 
@@ -553,6 +593,24 @@ describe 'The type calculator' do
         expect(common_t.param_types.class).to be(PTupleType)
         expect(common_t.block_type).to eql(callable_t(scalar_t))
       end
+
+      it 'return_type is included in the check (incompatible return_type)' do
+        t1 = callable_t([String], String)
+        t2 = callable_t([String], Integer)
+        common_t = calculator.common_type(t1, t2)
+        expect(common_t.class).to be(PCallableType)
+        expect(common_t.param_types).to be_nil
+        expect(common_t.return_type).to be_nil
+      end
+
+      it 'return_type is included in the check (compatible return_type)' do
+        t1 = callable_t([String], Numeric)
+        t2 = callable_t([String], Integer)
+        common_t = calculator.common_type(t1, t2)
+        expect(common_t.class).to be(PCallableType)
+        expect(common_t.param_types).to be_a(PTupleType)
+        expect(common_t.return_type).to eql(PNumericType::DEFAULT)
+      end
     end
   end
 
@@ -651,7 +709,7 @@ describe 'The type calculator' do
         # Add a non-empty variant
         all_instances << variant_t(PAnyType::DEFAULT, PUnitType::DEFAULT)
         # Add a type alias that doesn't resolve to 't'
-        all_instances << type_alias_t('MyInt', 'Integer').resolve(TypeParser.new, nil)
+        all_instances << type_alias_t('MyInt', 'Integer').resolve(TypeParser.singleton, nil)
 
         all_instances.each { |i| expect(i).not_to be_assignable_to(t) }
       end
@@ -806,6 +864,18 @@ describe 'The type calculator' do
         expect(empty_array_t).to be_assignable_to(array_t(string_t))
         expect(empty_array_t).to be_assignable_to(array_t(integer_t))
       end
+
+      it 'A Tuple is assignable to an array' do
+        expect(tuple_t(String)).to be_assignable_to(array_t(String))
+      end
+
+      it 'A Tuple with <n> elements is assignable to an array with min size <n>' do
+        expect(tuple_t(String,String)).to be_assignable_to(array_t(String, range_t(2, :default)))
+      end
+
+      it 'A Tuple with <n> elements where the last 2 are optional is assignable to an array with size <n> - 2' do
+        expect(constrained_tuple_t(range_t(2, :default), String,String,String,String)).to be_assignable_to(array_t(String, range_t(2, :default)))
+      end
     end
 
     context 'for Hash, such that' do
@@ -846,6 +916,34 @@ describe 'The type calculator' do
       end
     end
 
+    context 'for Timespan such that' do
+      it 'Timespan is assignable to less constrained Timespan' do
+        t1 = PTimespanType.new('00:00:10', '00:00:20')
+        t2 = PTimespanType.new('00:00:11', '00:00:19')
+        expect(t2).to be_assignable_to(t1)
+      end
+
+      it 'Timespan is not assignable to more constrained Timespan' do
+        t1 = PTimespanType.new('00:00:10', '00:00:20')
+        t2 = PTimespanType.new('00:00:11', '00:00:19')
+        expect(t1).not_to be_assignable_to(t2)
+      end
+    end
+
+    context 'for Timestamp such that' do
+      it 'Timestamp is assignable to less constrained Timestamp' do
+        t1 = PTimestampType.new('2016-01-01', '2016-12-31')
+        t2 = PTimestampType.new('2016-02-01', '2016-11-30')
+        expect(t2).to be_assignable_to(t1)
+      end
+
+      it 'Timestamp is not assignable to more constrained Timestamp' do
+        t1 = PTimestampType.new('2016-01-01', '2016-12-31')
+        t2 = PTimestampType.new('2016-02-01', '2016-11-30')
+        expect(t1).not_to be_assignable_to(t2)
+      end
+    end
+
     context 'for Tuple, such that' do
       it 'Tuple is not assignable to any other non Array based Collection type' do
         t = PTupleType::DEFAULT
@@ -857,8 +955,8 @@ describe 'The type calculator' do
       end
 
       it 'A tuple with parameters is assignable to the default Tuple' do
-        t = Puppet::Pops::Types::PTupleType::DEFAULT
-        t2 = Puppet::Pops::Types::PTupleType.new([Puppet::Pops::Types::PStringType::DEFAULT])
+        t = PTupleType::DEFAULT
+        t2 = PTupleType.new([PStringType::DEFAULT])
         expect(t2).to be_assignable_to(t)
       end
 
@@ -949,11 +1047,39 @@ describe 'The type calculator' do
       end
 
       it 'a callable with parameter is assignable to the default callable' do
-        expect(callable_t(string_t)).to be_assignable_to(Puppet::Pops::Types::PCallableType::DEFAULT)
+        expect(callable_t(string_t)).to be_assignable_to(PCallableType::DEFAULT)
       end
 
       it 'the default callable is not assignable to a callable with parameter' do
-        expect(Puppet::Pops::Types::PCallableType::DEFAULT).not_to be_assignable_to(callable_t(string_t))
+        expect(PCallableType::DEFAULT).not_to be_assignable_to(callable_t(string_t))
+      end
+
+      it 'a callable with a return type is assignable to the default callable' do
+        expect(callable_t([], string_t)).to be_assignable_to(PCallableType::DEFAULT)
+      end
+
+      it 'the default callable is not assignable to a callable with a return type' do
+        expect(PCallableType::DEFAULT).not_to be_assignable_to(callable_t([],string_t))
+      end
+
+      it 'a callable with a return type Any is assignable to the default callable' do
+        expect(callable_t([], object_t)).to be_assignable_to(PCallableType::DEFAULT)
+      end
+
+      it 'a callable with a return type Any is equal to a callable with the same parameters and no return type' do
+        expect(callable_t([string_t], object_t)).to eql(callable_t(string_t))
+      end
+
+      it 'a callable with a return type different than Any is not equal to a callable with the same parameters and no return type' do
+        expect(callable_t([string_t], string_t)).not_to eql(callable_t(string_t))
+      end
+
+      it 'a callable with a return type is assignable from another callable with an assignable return type' do
+        expect(callable_t([], string_t)).to be_assignable_to(callable_t([], PScalarType::DEFAULT))
+      end
+
+      it 'a callable with a return type is not assignable from another callable unless the return type is assignable' do
+        expect(callable_t([], string_t)).not_to be_assignable_to(callable_t([], integer_t))
       end
     end
 
@@ -1335,7 +1461,7 @@ describe 'The type calculator' do
     end
 
     context 'for TypeAlias, such that' do
-      let!(:parser) { TypeParser.new }
+      let!(:parser) { TypeParser.singleton }
 
       it 'it is assignable to the type that it is an alias for' do
         t = type_alias_t('Alias', 'Integer').resolve(parser, nil)
@@ -1702,8 +1828,8 @@ describe 'The type calculator' do
       it 'a Closure should be considered a Callable' do
         factory = Model::Factory
         params = [factory.PARAM('a')]
-        the_block = factory.LAMBDA(params,factory.literal(42))
-        the_closure = Evaluator::Closure.new(:fake_evaluator, the_block, :fake_scope)
+        the_block = factory.LAMBDA(params,factory.literal(42), nil)
+        the_closure = Evaluator::Closure::Dynamic.new(:fake_evaluator, the_block, :fake_scope)
         expect(calculator.instance?(all_callables_t, the_closure)).to be_truthy
         expect(calculator.instance?(callable_t(object_t), the_closure)).to be_truthy
         expect(calculator.instance?(callable_t(object_t, object_t), the_closure)).to be_falsey
@@ -1728,7 +1854,7 @@ describe 'The type calculator' do
     end
 
     context 'and t is a TypeAlias' do
-      let!(:parser) { TypeParser.new }
+      let!(:parser) { TypeParser.singleton }
 
       it 'should consider x an instance of the aliased simple type' do
         t = type_alias_t('Alias', 'Integer').resolve(parser, nil)

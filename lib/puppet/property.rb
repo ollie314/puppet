@@ -98,6 +98,22 @@ class Puppet::Property < Puppet::Parameter
       raise ArgumentError, "Supported values for Property#array_matching are 'first' and 'all'" unless [:first, :all].include?(value)
       @array_matching = value
     end
+
+    # Used to mark a type property as having or lacking idempotency (on purpose
+    # generally). This is used to avoid marking the property as a
+    # corrective_change when there is known idempotency issues with the property
+    # rendering a corrective_change flag as useless.
+    # @return [Boolean] true if the property is marked as idempotent
+    def idempotent
+      @idempotent.nil? ? @idempotent = true : @idempotent
+    end
+
+    # Attribute setter for the idempotent attribute.
+    # @param [bool] value boolean indicating if the property is idempotent.
+    # @see idempotent
+    def idempotent=(value)
+      @idempotent = value
+    end
   end
 
   # Looks up a value's name among valid values, to enable option lookup with result as a key.
@@ -228,18 +244,20 @@ class Puppet::Property < Puppet::Parameter
   # * `:name` - the event_name
   # * `:desired_value` - a.k.a _should_ or _wanted value_
   # * `:property` - reference to this property
-  # * `:source_description` - the _path_ (?? See todo)
+  # * `:source_description` - The containment path of this property, indicating what resource this
+  #                           property is associated with and in what stage and class that resource
+  #                           was declared, e.g. "/Stage[main]/Myclass/File[/tmp/example]/ensure"
   # * `:invalidate_refreshes` - if scheduled refreshes should be invalidated
+  # * `:redacted` - if the event will be redacted (due to this property being sensitive)
   #
-  # @todo What is the intent of this method? What is the meaning of the :source_description passed in the
-  #   options to the created event?
   # @return [Puppet::Transaction::Event] the created event
   # @see Puppet::Type#event
-  def event
-    attrs = { :name => event_name, :desired_value => should, :property => self, :source_description => path }
+  def event(options = {})
+    attrs = { :name => event_name, :desired_value => should, :property => self, :source_description => path }.merge(options)
     if should and value = self.class.value_collection.match?(should)
       attrs[:invalidate_refreshes] = true if value.invalidate_refreshes
     end
+    attrs[:redacted] = @sensitive
     resource.event attrs
   end
 
@@ -324,6 +342,42 @@ class Puppet::Property < Puppet::Parameter
     end
   end
 
+  # This method tests if two values are insync? outside of the properties current
+  # should value. This works around the requirement for corrective_change analysis
+  # that requires two older values to be compared with the properties potentially
+  # custom insync? code.
+  #
+  # @param [Object] should the value it should be
+  # @param [Object] is the value it is
+  # @return [Boolean] whether or not the values are in sync or not
+  # @api private
+  def insync_values?(should, is)
+    # Here be dragons. We're setting the should value of a property purely just to
+    # call its insync? method, as it lacks a way to pass in a should.
+    # Unfortunately there isn't an API compatible way of avoiding this, as both should
+    # an insync? behaviours are part of the public API. Future API work should factor
+    # this kind of arbitrary comparisons into the API to remove this complexity. -ken
+
+    # Backup old should, set it to the new value, then call insync? on the property.
+    old_should = @should
+
+    begin
+      @should = should
+      insync?(is)
+    rescue => detail
+      # Certain operations may fail, but we don't want to fail the transaction if we can
+      # avoid it
+      msg = "Unknown failure using insync_values? on type: #{self.resource.ref} / property: #{self.name} to compare values #{should} and #{is}"
+      Puppet.info(msg)
+
+      # Return nil, ie. unknown
+      nil
+    ensure
+      # Always restore old should
+      @should = old_should
+    end
+  end
+
   # Checks if the given current and desired values are equal.
   # This default implementation performs this check in a backwards compatible way where
   # the equality of the two values is checked, and then the equality of current with desired
@@ -366,6 +420,12 @@ class Puppet::Property < Puppet::Parameter
   # @return [Boolean] whether the {array_matching} mode is set to `:all` or not
   def match_all?
     self.class.array_matching == :all
+  end
+
+  # @return [Boolean] whether the property is marked as idempotent for the purposes
+  #   of calculating corrective change.
+  def idempotent?
+    self.class.idempotent
   end
 
   # @return [Symbol] the name of the property as stated when the property was created.
@@ -428,7 +488,7 @@ class Puppet::Property < Puppet::Parameter
       rescue Puppet::Error
         raise
       rescue => detail
-        error = Puppet::ResourceError.new("Could not set '#{value}' on #{self.class.name}: #{detail}", @resource.line, @resource.file, detail)
+        error = Puppet::ResourceError.new("Could not set '#{value}' on #{self.class.name}: #{detail}", @resource.file, @resource.line, detail)
         error.set_backtrace detail.backtrace
         Puppet.log_exception(detail, error.message)
         raise error

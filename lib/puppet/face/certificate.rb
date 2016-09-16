@@ -77,6 +77,10 @@ Puppet::Indirector::Face.define(:certificate, '0.0.1') do
       # them. Otherwise, they will default to the config file setting iff this
       # cert is for the host we're running on.
 
+      unless Puppet::FileSystem.exist?(Puppet[:hostcert])
+        Puppet.push_context({:ssl_host => host})
+      end
+
       host.generate_certificate_request(:dns_alt_names => options[:dns_alt_names])
     end
   end
@@ -129,7 +133,9 @@ Puppet::Indirector::Face.define(:certificate, '0.0.1') do
           raise ArgumentError, "This process is not configured as a certificate authority"
         end
 
-        ca.sign(name, options[:allow_dns_alt_names])
+        signing_options = {allow_dns_alt_names: options[:allow_dns_alt_names]}
+
+        ca.sign(name, signing_options)
       end
     end
   end

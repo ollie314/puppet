@@ -6,7 +6,6 @@ require 'forwardable'
 require 'puppet/parser'
 require 'puppet/parser/templatewrapper'
 
-require 'puppet/resource/type_collection_helper'
 require 'puppet/util/methodhelper'
 
 # This class is part of the internal parser/evaluator/compiler functionality of Puppet.
@@ -18,7 +17,6 @@ class Puppet::Parser::Scope
   extend Forwardable
   include Puppet::Util::MethodHelper
 
-  include Puppet::Resource::TypeCollectionHelper
   require 'puppet/parser/resource'
 
   AST = Puppet::Parser::AST
@@ -201,7 +199,7 @@ class Puppet::Parser::Scope
           scope.new_match_scope(nil)
           return as_read_only { expression.safeevaluate(scope) }
         end
-        raise Puppet::Error, "default expression for $#{name} tries to illegally access not yet evaluated $#{bad}"
+        parameter_reference_failure(name, bad)
       end
     end
 
@@ -211,12 +209,21 @@ class Puppet::Parser::Scope
           scope.new_match_scope(nil)
           return as_read_only { evaluator.evaluate(expression, scope) }
         end
-        raise Puppet::Error, "default expression for $#{name} tries to illegally access not yet evaluated $#{bad}"
+        parameter_reference_failure(name, bad)
       end
     end
 
-    def initialize(parent, param_names)
+    def parameter_reference_failure(from, to)
+      # Parameters are evaluated in the order they have in the @params hash.
+      keys = @params.keys
+      raise Puppet::Error, "#{@callee_name}: expects a value for parameter $#{to}" if keys.index(to) < keys.index(from)
+      raise Puppet::Error, "#{@callee_name}: default expression for $#{from} tries to illegally access not yet evaluated $#{to}"
+    end
+    private :parameter_reference_failure
+
+    def initialize(parent, callee_name, param_names)
       super(parent)
+      @callee_name = callee_name
       @params = {}
       param_names.each { |name| @params[name] = Access.new }
     end
@@ -340,11 +347,11 @@ class Puppet::Parser::Scope
   end
 
   def find_hostclass(name)
-    known_resource_types.find_hostclass(name)
+    environment.known_resource_types.find_hostclass(name)
   end
 
   def find_definition(name)
-    known_resource_types.find_definition(name)
+    environment.known_resource_types.find_definition(name)
   end
 
   def find_global_scope()
@@ -458,7 +465,8 @@ class Puppet::Parser::Scope
   # Look up a defined type.
   def lookuptype(name)
     # This happens a lot, avoid making a call to make a call
-    known_resource_types.find_definition(name) || known_resource_types.find_hostclass(name)
+    krt = environment.known_resource_types
+    krt.find_definition(name) || krt.find_hostclass(name)
   end
 
   def undef_as(x,v)
@@ -702,7 +710,7 @@ class Puppet::Parser::Scope
 
     params.each { |param|
       if table.include?(param.name)
-        raise Puppet::ParseError.new("Default already defined for #{type} { #{param.name} }; cannot redefine", param.line, param.file)
+        raise Puppet::ParseError.new("Default already defined for #{type} { #{param.name} }; cannot redefine", param.file, param.line)
       end
       table[param.name] = param
     }
@@ -913,9 +921,12 @@ class Puppet::Parser::Scope
   end
 
   # Nests a parameter scope
+  # @param [String] callee_name the name of the function, template, or resource that defines the parameters
+  # @param [Array<String>] param_names list of parameter names
+  # @yieldparam [ParameterScope] param_scope the nested scope
   # @api private
-  def with_parameter_scope(param_names)
-    param_scope = ParameterScope.new(@ephemeral.last, param_names)
+  def with_parameter_scope(callee_name, param_names)
+    param_scope = ParameterScope.new(@ephemeral.last, callee_name, param_names)
     with_guarded_scope do
       @ephemeral.push(param_scope)
       yield(param_scope)
@@ -964,18 +975,19 @@ class Puppet::Parser::Scope
     end
   end
 
+  # @api private
   def find_resource_type(type)
-    # It still works fine without the type == 'class' short-cut, but it is a lot slower.
-    return nil if ["class", "node"].include? type.to_s.downcase
-    find_builtin_resource_type(type) || find_defined_resource_type(type)
+    raise Puppet::DevError, "Scope#find_resource_type() is no longer supported, use Puppet::Pops::Evaluator::Runtime3ResourceSupport instead"
   end
 
+  # @api private
   def find_builtin_resource_type(type)
-    Puppet::Type.type(type.to_s.downcase.to_sym)
+    raise Puppet::DevError, "Scope#find_builtin_resource_type() is no longer supported, use Puppet::Pops::Evaluator::Runtime3ResourceSupport instead"
   end
 
+  # @api private
   def find_defined_resource_type(type)
-    known_resource_types.find_definition(type.to_s.downcase)
+    raise Puppet::DevError, "Scope#find_defined_resource_type() is no longer supported, use Puppet::Pops::Evaluator::Runtime3ResourceSupport instead"
   end
 
 
@@ -993,25 +1005,33 @@ class Puppet::Parser::Scope
     end
   end
 
+  # Called from two places:
+  # runtime3support when creating resources
+  # ast::resource - used by create resources ?
+  # @api private
   def resolve_type_and_titles(type, titles)
-    raise ArgumentError, "titles must be an array" unless titles.is_a?(Array)
+    raise Puppet::DevError, "Scope#resolve_type_and_title() is no longer supported, use Puppet::Pops::Evaluator::Runtime3ResourceSupport instead"
 
-    case type.downcase
-    when "class"
-      # resolve the titles
-      titles = titles.collect do |a_title|
-        hostclass = find_hostclass(a_title)
-        hostclass ?  hostclass.name : a_title
-      end
-    when "node"
-      # no-op
-    else
-      # resolve the type
-      resource_type = find_resource_type(type)
-      type = resource_type.name if resource_type
-    end
-
-    return [type, titles]
+#    Puppet.deprecation_warning('Scope#resolve_type_and_titles is deprecated.')
+#
+#    raise ArgumentError, "titles must be an array" unless titles.is_a?(Array)
+#
+#    case type.downcase
+#    when "class"
+#      # resolve the titles
+#      titles = titles.collect do |a_title|
+#        hostclass = find_hostclass(a_title)
+#        hostclass ?  hostclass.name : a_title
+#      end
+#    when "node"
+#      # no-op
+#    else
+#      # resolve the type
+#      resource_type = find_resource_type(type)
+#      type = resource_type.name if resource_type
+#    end
+#
+#    return [type, titles]
   end
 
   # Transforms references to classes to the form suitable for
@@ -1044,7 +1064,7 @@ class Puppet::Parser::Scope
       when Puppet::Pops::Types::PResourceType
         assert_class_and_title(name.type_name, name.title)
         name.title.sub(/^([^:]{1,2})/, '::\1')
-      end
+      end.downcase
     end
   end
 

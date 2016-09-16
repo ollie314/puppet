@@ -96,8 +96,7 @@ class Puppet::Provider
   attr_accessor :resource
 
   # Convenience methods - see class method with the same name.
-  # @see execute
-  # @return (see execute)
+  # @return (see self.execute)
   def execute(*args)
     Puppet::Util::Execution.execute(*args)
   end
@@ -108,8 +107,7 @@ class Puppet::Provider
   end
 
   # Convenience methods - see class method with the same name.
-  # @see execpipe
-  # @return (see execpipe)
+  # @return (see self.execpipe)
   def execpipe(*args, &block)
     Puppet::Util::Execution.execpipe(*args, &block)
   end
@@ -120,8 +118,7 @@ class Puppet::Provider
   end
 
   # Convenience methods - see class method with the same name.
-  # @see execfail
-  # @return (see execfail)
+  # @return (see self.execfail)
   def execfail(*args)
     Puppet::Util::Execution.execfail(*args)
   end
@@ -505,7 +502,7 @@ class Puppet::Provider
   # structure of the provider - this hash holds the current state property values of system entities
   # as they are being discovered by querying or other operations (typically getters).
   #
-  # @todo The use of a hash as a parameter needs a better exaplanation; why is this done? What is the intent?
+  # @todo The use of a hash as a parameter needs a better explanation; why is this done? What is the intent?
   # @param resource [Puppet::Resource, Hash] optional resource or hash
   #
   def initialize(resource = nil)

@@ -600,16 +600,6 @@ describe Puppet::Type.type(:scheduled_task).provider(:win32_taskscheduler), :if 
 
       expect(resource.provider.exists?).to eq(true)
     end
-
-    it "uses SystemRoot in the path of Task folder" do
-      Win32::TaskScheduler.unstub(:new)
-      exists_test_task = Win32::TaskScheduler.new
-      Dir.stubs(:foreach).with('D:/WinNT/Tasks').returns([])
-
-      Puppet::Util.withenv('SystemRoot' => 'D:/WinNT') do
-        exists_test_task.exists?('Test Task')
-      end
-    end
   end
 
   describe '#clear_task' do
@@ -1583,6 +1573,7 @@ describe Puppet::Type.type(:scheduled_task).provider(:win32_taskscheduler), :if 
       end
 
       it 'should save the task' do
+        @mock_task.expects(:set_account_information).with(nil, nil)
         @mock_task.expects(:save)
 
         resource.provider.flush
@@ -1854,6 +1845,202 @@ describe Puppet::Type.type(:scheduled_task).provider(:win32_taskscheduler), :if 
       resource.provider.expects(:trigger=)
 
       resource.provider.create
+    end
+  end
+
+  describe "Win32::TaskScheduler", :if => Puppet.features.microsoft_windows? do
+
+    let(:name) { SecureRandom.uuid }
+
+    describe 'sets appropriate generic trigger defaults' do
+      before(:each) do
+        @now = Time.now
+        Time.stubs(:now).returns(@now)
+      end
+
+      it 'for a ONCE schedule' do
+        task = Win32::TaskScheduler.new(name, { 'trigger_type' => Win32::TaskScheduler::ONCE })
+        expect(task.trigger(0)['start_year']).to eq(@now.year)
+        expect(task.trigger(0)['start_month']).to eq(@now.month)
+        expect(task.trigger(0)['start_day']).to eq(@now.day)
+      end
+
+      it 'for a DAILY schedule' do
+        trigger = {
+          'trigger_type' => Win32::TaskScheduler::DAILY,
+          'type' => { 'days_interval' => 1 }
+        }
+        task = Win32::TaskScheduler.new(name, trigger)
+
+        expect(task.trigger(0)['start_year']).to eq(@now.year)
+        expect(task.trigger(0)['start_month']).to eq(@now.month)
+        expect(task.trigger(0)['start_day']).to eq(@now.day)
+      end
+
+      it 'for a WEEKLY schedule' do
+        trigger = {
+          'trigger_type' => Win32::TaskScheduler::WEEKLY,
+          'type' => { 'weeks_interval' => 1, 'days_of_week' => 1 }
+        }
+        task = Win32::TaskScheduler.new(name, trigger)
+
+        expect(task.trigger(0)['start_year']).to eq(@now.year)
+        expect(task.trigger(0)['start_month']).to eq(@now.month)
+        expect(task.trigger(0)['start_day']).to eq(@now.day)
+      end
+
+      it 'for a MONTHLYDATE schedule' do
+        trigger = {
+          'trigger_type' => Win32::TaskScheduler::MONTHLYDATE,
+          'type' => { 'days' => 1, 'months' => 1 }
+        }
+        task = Win32::TaskScheduler.new(name, trigger)
+
+        expect(task.trigger(0)['start_year']).to eq(@now.year)
+        expect(task.trigger(0)['start_month']).to eq(@now.month)
+        expect(task.trigger(0)['start_day']).to eq(@now.day)
+      end
+
+      it 'for a MONTHLYDOW schedule' do
+        trigger = {
+          'trigger_type' => Win32::TaskScheduler::MONTHLYDOW,
+          'type' => { 'weeks' => 1, 'days_of_week' => 1, 'months' => 1 }
+        }
+        task = Win32::TaskScheduler.new(name, trigger)
+
+        expect(task.trigger(0)['start_year']).to eq(@now.year)
+        expect(task.trigger(0)['start_month']).to eq(@now.month)
+        expect(task.trigger(0)['start_day']).to eq(@now.day)
+      end
+    end
+
+    describe 'enforces maximum lengths' do
+      let(:task) { Win32::TaskScheduler.new(name, { 'trigger_type' => Win32::TaskScheduler::ONCE }) }
+
+      it 'on account user name' do
+        expect {
+          task.set_account_information('a' * (Win32::TaskScheduler::MAX_ACCOUNT_LENGTH + 1), 'pass')
+        }.to raise_error(Puppet::Error)
+      end
+
+      it 'on application name' do
+        expect {
+          task.application_name = 'a' * (Win32::TaskScheduler::MAX_PATH + 1)
+        }.to raise_error(Puppet::Error)
+      end
+
+      it 'on parameters' do
+        expect {
+          task.parameters = 'a' * (Win32::TaskScheduler::MAX_PARAMETERS_LENGTH + 1)
+        }.to raise_error(Puppet::Error)
+      end
+
+      it 'on working directory' do
+        expect {
+          task.working_directory = 'a' * (Win32::TaskScheduler::MAX_PATH + 1)
+        }.to raise_error(Puppet::Error)
+      end
+
+      it 'on comment' do
+        expect {
+          task.comment = 'a' * (Win32::TaskScheduler::MAX_COMMENT_LENGTH + 1)
+        }.to raise_error(Puppet::Error)
+      end
+
+      it 'on creator' do
+        expect {
+          task.creator = 'a' * (Win32::TaskScheduler::MAX_ACCOUNT_LENGTH + 1)
+        }.to raise_error(Puppet::Error)
+      end
+    end
+
+    describe '#exists?' do
+      it 'works with Unicode task names' do
+        task_name = name + "\u16A0\u16C7\u16BB" # ᚠᛇᚻ
+
+        begin
+          task = Win32::TaskScheduler.new(task_name, { 'trigger_type' => Win32::TaskScheduler::ONCE })
+          task.save()
+
+          expect(Puppet::FileSystem.exist?("C:\\Windows\\Tasks\\#{task_name}.job")).to be_truthy
+          expect(task.exists?(task_name)).to be_truthy
+        ensure
+          task.delete(task_name) if Win32::TaskScheduler.new.exists?(task_name)
+        end
+      end
+
+      it 'is case insensitive' do
+        task_name = name + 'abc' # name is a guid, but might not have alpha chars
+
+        begin
+          task = Win32::TaskScheduler.new(task_name.upcase, { 'trigger_type' => Win32::TaskScheduler::ONCE })
+          task.save()
+
+          expect(task.exists?(task_name.downcase)).to be_truthy
+        ensure
+          task.delete(task_name) if Win32::TaskScheduler.new.exists?(task_name)
+        end
+      end
+    end
+
+    describe 'does not corrupt tasks' do
+      it 'when setting maximum length values for all settings' do
+        begin
+          task = Win32::TaskScheduler.new(name, { 'trigger_type' => Win32::TaskScheduler::ONCE })
+
+          application_name = 'a' * Win32::TaskScheduler::MAX_PATH
+          parameters = 'b' * Win32::TaskScheduler::MAX_PARAMETERS_LENGTH
+          working_directory = 'c' * Win32::TaskScheduler::MAX_PATH
+          comment = 'd' * Win32::TaskScheduler::MAX_COMMENT_LENGTH
+          creator = 'e' * Win32::TaskScheduler::MAX_ACCOUNT_LENGTH
+
+          task.application_name = application_name
+          task.parameters = parameters
+          task.working_directory = working_directory
+          task.comment = comment
+          task.creator = creator
+
+          # saving and reloading (activating) can induce COM load errors when
+          # file is corrupted, which can happen when the upper bounds of these lengths are set too high
+          task.save()
+          task.activate(name)
+
+          # furthermore, corrupted values may not necessarily be read back properly
+          # note that SYSTEM is always returned as an empty string in account_information
+          expect(task.account_information).to eq('')
+          expect(task.application_name).to eq(application_name)
+          expect(task.parameters).to eq(parameters)
+          expect(task.working_directory).to eq(working_directory)
+          expect(task.comment).to eq(comment)
+          expect(task.creator).to eq(creator)
+        ensure
+          task.delete(name) if Win32::TaskScheduler.new.exists?(name)
+        end
+      end
+
+      it 'by preventing a save() not preceded by a set_account_information()' do
+        begin
+          # creates a default new task with SYSTEM user
+          task = Win32::TaskScheduler.new(name, { 'trigger_type' => Win32::TaskScheduler::ONCE })
+          # save automatically resets the current task
+          task.save()
+
+          # re-activate named task, try to modify, and save
+          task.activate(name)
+          task.application_name = 'c:/windows/system32/notepad.exe'
+
+          expect { task.save() }.to raise_error(Puppet::Error, /Account information must be set on the current task to save it properly/)
+
+          # on a failed save, the current task is still active - add SYSTEM
+          task.set_account_information('', nil)
+          expect(task.save()).to be_instance_of(Win32::TaskScheduler::COM::Task)
+
+          # the most appropriate additional validation here would be to confirm settings with schtasks.exe
+          # but that test can live inside a system-level acceptance test
+        ensure
+          task.delete(name) if Win32::TaskScheduler.new.exists?(name)
+        end
+      end
     end
   end
 end

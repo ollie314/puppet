@@ -393,10 +393,46 @@ describe Puppet::Type, :unless => Puppet.features.microsoft_windows? do
         expect(relationship_graph.edges_between(src,dst).first.event).to eq(:NONE)
       end
 
+      it 'should not fail autorequire contains undef entries' do
+        type = Puppet::Type.newtype(:autorelation_two) do
+          newparam(:name) { isnamevar }
+          autorequire(:autorelation_one) { [nil, 'foo'] }
+        end
+
+        relationship_graph = compile_to_relationship_graph(<<-MANIFEST)
+          autorelation_one { 'foo': }
+          autorelation_two { 'bar': }
+        MANIFEST
+
+        src = relationship_graph.vertices.select{ |x| x.ref.to_s == 'Autorelation_one[foo]' }.first
+        dst = relationship_graph.vertices.select{ |x| x.ref.to_s == 'Autorelation_two[bar]' }.first
+
+        expect(relationship_graph.edge?(src,dst)).to be_truthy
+        expect(relationship_graph.edges_between(src,dst).first.event).to eq(:NONE)
+      end
+
       it "should be able to autosubscribe resources" do
         type = Puppet::Type.newtype(:autorelation_two) do
           newparam(:name) { isnamevar }
           autosubscribe(:autorelation_one) { ['foo'] }
+        end
+
+        relationship_graph = compile_to_relationship_graph(<<-MANIFEST)
+          autorelation_one { 'foo': }
+          autorelation_two { 'bar': }
+        MANIFEST
+
+        src = relationship_graph.vertices.select{ |x| x.ref.to_s == 'Autorelation_one[foo]' }.first
+        dst = relationship_graph.vertices.select{ |x| x.ref.to_s == 'Autorelation_two[bar]' }.first
+
+        expect(relationship_graph.edge?(src,dst)).to be_truthy
+        expect(relationship_graph.edges_between(src,dst).first.event).to eq(:ALL_EVENTS)
+      end
+
+      it 'should not fail if autosubscribe contains undef entries' do
+        type = Puppet::Type.newtype(:autorelation_two) do
+          newparam(:name) { isnamevar }
+          autosubscribe(:autorelation_one) { [nil, 'foo'] }
         end
 
         relationship_graph = compile_to_relationship_graph(<<-MANIFEST)
@@ -429,10 +465,46 @@ describe Puppet::Type, :unless => Puppet.features.microsoft_windows? do
         expect(relationship_graph.edges_between(src,dst).first.event).to eq(:NONE)
       end
 
+      it "should not fail when autobefore contains undef entries" do
+        type = Puppet::Type.newtype(:autorelation_two) do
+          newparam(:name) { isnamevar }
+          autobefore(:autorelation_one) { [nil, 'foo'] }
+        end
+
+        relationship_graph = compile_to_relationship_graph(<<-MANIFEST)
+          autorelation_one { 'foo': }
+          autorelation_two { 'bar': }
+        MANIFEST
+
+        src = relationship_graph.vertices.select{ |x| x.ref.to_s == 'Autorelation_two[bar]' }.first
+        dst = relationship_graph.vertices.select{ |x| x.ref.to_s == 'Autorelation_one[foo]' }.first
+
+        expect(relationship_graph.edge?(src,dst)).to be_truthy
+        expect(relationship_graph.edges_between(src,dst).first.event).to eq(:NONE)
+      end
+
       it "should be able to autonotify resources" do
         type = Puppet::Type.newtype(:autorelation_two) do
           newparam(:name) { isnamevar }
           autonotify(:autorelation_one) { ['foo'] }
+        end
+
+        relationship_graph = compile_to_relationship_graph(<<-MANIFEST)
+          autorelation_one { 'foo': }
+          autorelation_two { 'bar': }
+        MANIFEST
+
+        src = relationship_graph.vertices.select{ |x| x.ref.to_s == 'Autorelation_two[bar]' }.first
+        dst = relationship_graph.vertices.select{ |x| x.ref.to_s == 'Autorelation_one[foo]' }.first
+
+        expect(relationship_graph.edge?(src,dst)).to be_truthy
+        expect(relationship_graph.edges_between(src,dst).first.event).to eq(:ALL_EVENTS)
+      end
+
+      it 'should not fail if autonotify contains undef entries' do
+        type = Puppet::Type.newtype(:autorelation_two) do
+          newparam(:name) { isnamevar }
+          autonotify(:autorelation_one) { [nil, 'foo'] }
         end
 
         relationship_graph = compile_to_relationship_graph(<<-MANIFEST)
@@ -483,6 +555,38 @@ describe Puppet::Type, :unless => Puppet.features.microsoft_windows? do
         params = Puppet::Type.type(:mount).new(resource).to_hash
         expect(params[:fstype]).to eq("boo")
         expect(params[:atboot]).to eq(:yes)
+      end
+
+      it "copies sensitive parameters to the appropriate properties" do
+        resource = Puppet::Resource.new(:mount, "/foo",
+                                        :parameters => {:atboot => :yes, :fstype => "boo"},
+                                        :sensitive_parameters => [:fstype])
+        type = Puppet::Type.type(:mount).new(resource)
+        expect(type.property(:fstype).sensitive).to eq true
+      end
+
+      it "logs a warning when a parameter is marked as sensitive" do
+        resource = Puppet::Resource.new(:mount, "/foo",
+                                        :parameters => {:atboot => :yes, :fstype => "boo", :remounts => true},
+                                        :sensitive_parameters => [:remounts])
+        Puppet::Type.type(:mount).any_instance.expects(:warning).with(regexp_matches(/Unable to mark 'remounts' as sensitive: remounts is a parameter and not a property/))
+        Puppet::Type.type(:mount).new(resource)
+      end
+
+      it "logs a warning when a property is not set but is marked as sensitive" do
+        resource = Puppet::Resource.new(:mount, "/foo",
+                                        :parameters => {:atboot => :yes, :fstype => "boo"},
+                                        :sensitive_parameters => [:device])
+        Puppet::Type.type(:mount).any_instance.expects(:warning).with("Unable to mark 'device' as sensitive: the property itself was not assigned a value.")
+        Puppet::Type.type(:mount).new(resource)
+      end
+
+      it "logs an error when a property is not defined on the type but is marked as sensitive" do
+        resource = Puppet::Resource.new(:mount, "/foo",
+                                        :parameters => {:atboot => :yes, :fstype => "boo"},
+                                        :sensitive_parameters => [:content])
+        Puppet::Type.type(:mount).any_instance.expects(:err).with("Unable to mark 'content' as sensitive: the property itself is not defined on mount.")
+        Puppet::Type.type(:mount).new(resource)
       end
     end
 

@@ -369,7 +369,7 @@ class Puppet::Resource::Type
     end
     scope.class_set(self.name,scope) if hostclass? || node?
 
-    param_hash = scope.with_parameter_scope(arguments.keys) do |param_scope|
+    param_hash = scope.with_parameter_scope(resource.to_s, arguments.keys) do |param_scope|
       # Assign directly to the parameter scope to avoid scope parameter validation at this point. It
       # will happen anyway when the values are assigned to the scope after the parameter scoped has
       # been popped.
@@ -427,7 +427,15 @@ class Puppet::Resource::Type
   # Validate that all parameters given to the resource are correct
   # @param resource [Puppet::Resource] the resource to validate
   def validate_resource(resource)
-    validate_resource_hash(resource, Hash[resource.parameters.map { |name, value| [name.to_s, value.value] }])
+    # Since Sensitive values have special encoding (in a separate parameter) an unwrapped sensitive value must be
+    # recreated as a Sensitive in order to perform correct type checking.
+    sensitives = Set.new(resource.sensitive_parameters)
+    validate_resource_hash(resource,
+      Hash[resource.parameters.map do |name, value|
+        value_to_validate = sensitives.include?(name) ? Puppet::Pops::Types::PSensitiveType::Sensitive.new(value.value) : value.value
+        [name.to_s, value_to_validate]
+      end
+    ])
   end
 
   # Check whether a given argument is valid.

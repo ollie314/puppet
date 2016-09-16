@@ -6,7 +6,7 @@ class Puppet::Pops::Loader::NullLoader < Puppet::Pops::Loader::Loader
   # Construct a NullLoader, optionally with a parent loader
   #
   def initialize(parent_loader=nil, loader_name = "null-loader")
-    @loader_name = loader_name
+    super(loader_name)
     @parent = parent_loader
   end
 
@@ -15,11 +15,27 @@ class Puppet::Pops::Loader::NullLoader < Puppet::Pops::Loader::Loader
     @parent
   end
 
+  def find(typed_name)
+    if @parent.nil?
+      nil
+    else
+      @parent.find(typed_name)
+    end
+  end
+
   def load_typed(typed_name)
     if @parent.nil?
       nil
     else
       @parent.load_typed(typed_name)
+    end
+  end
+
+  def loaded_entry(typed_name, check_dependencies = false)
+    if @parent.nil?
+      nil
+    else
+      @parent.loaded_entry(typed_name, check_dependencies)
     end
   end
 

@@ -18,6 +18,8 @@ describe Puppet::Type.type(:user).provider(:windows_adsi), :if => Puppet.feature
   before :each do
     Puppet::Util::Windows::ADSI.stubs(:computer_name).returns('testcomputername')
     Puppet::Util::Windows::ADSI.stubs(:connect).returns connection
+    # this would normally query the system, but not needed for these tests
+    Puppet::Util::Windows::ADSI::User.stubs(:localized_domains).returns([])
   end
 
   describe ".instances" do
@@ -32,6 +34,16 @@ describe Puppet::Type.type(:user).provider(:windows_adsi), :if => Puppet.feature
 
   it "should provide access to a Puppet::Util::Windows::ADSI::User object" do
     expect(provider.user).to be_a(Puppet::Util::Windows::ADSI::User)
+  end
+
+  describe "when retrieving the password property" do
+    context "when the resource has a nil password" do
+      it "should never issue a logon attempt" do
+        resource.stubs(:[]).with(any_of(:name, :password)).returns(nil)
+        Puppet::Util::Windows::User.expects(:logon_user).never
+        provider.password
+      end
+    end
   end
 
   describe "when managing groups" do
@@ -97,6 +109,10 @@ describe Puppet::Type.type(:user).provider(:windows_adsi), :if => Puppet.feature
     context "when membership => inclusive" do
       before :each do
         resource[:membership] = :inclusive
+      end
+
+      it "should return true when current and should contain the same groups in a different order" do
+        expect(provider.groups_insync?(['group1', 'group2', 'group3'], ['group3', 'group1', 'group2'])).to be_truthy
       end
 
       it "should return false when current contains different groups than should" do
@@ -220,6 +236,13 @@ describe Puppet::Type.type(:user).provider(:windows_adsi), :if => Puppet.feature
       provider.user.expects(:password_is?).with('plaintext').returns false
 
       expect(provider.password).to be_nil
+    end
+
+    it "should test a blank user password" do
+      resource[:password] = ''
+      provider.user.expects(:password_is?).with('').returns true
+
+      expect(provider.password).to eq('')
     end
 
     it 'should not create a user if a group by the same name exists' do

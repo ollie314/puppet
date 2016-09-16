@@ -295,6 +295,10 @@ class Puppet::Parameter
   #
   attr_accessor :parent
 
+  # @!attribute [rw] sensitive
+  #   @return [true, false] If this parameter has been tagged as sensitive.
+  attr_accessor :sensitive
+
   # Returns a string representation of the resource's containment path in
   # the catalog.
   # @return [String]
@@ -376,7 +380,7 @@ class Puppet::Parameter
     tmp
   end
 
-  # Returns an array of strings representing the containment heirarchy
+  # Returns an array of strings representing the containment hierarchy
   # (types/classes) that make up the path to the resource from the root
   # of the catalog.  This is mostly used for logging purposes.
   #
@@ -479,7 +483,7 @@ class Puppet::Parameter
   #   calls both validate and munge on the given value, so no late binding.
   #
   # The given value is validated and then munged (if munging has been specified). The result is store
-  # as the value of this arameter.
+  # as the value of this parameter.
   # @return [Object] The given `value` after munging.
   # @raise (see #validate)
   #
@@ -501,7 +505,7 @@ class Puppet::Parameter
 
   # @return [Array<Symbol>] Returns an array of the associated resource's symbolic tags (including the parameter itself).
   # Returns an array of the associated resource's symbolic tags (including the parameter itself).
-  # At a minimun, the array contains the name of the parameter. If the associated resource
+  # At a minimum, the array contains the name of the parameter. If the associated resource
   # has tags, these tags are also included in the array.
   # @todo The original comment says = _"The properties need to return tags so that logs correctly
   #   collect them."_ what if anything of that is of interest to document. Should tags and their relationship
@@ -520,6 +524,22 @@ class Puppet::Parameter
   # @return [String] The name of the parameter in string form.
   def to_s
     name.to_s
+  end
+
+  # Formats the given string and conditionally redacts the provided interpolation variables, depending on if
+  # this property is sensitive.
+  #
+  # @note Because the default implementation of Puppet::Property#is_to_s returns the current value as-is, it
+  #   doesn't necessarily return a string. For the sake of sanity we just cast everything to a string for
+  #   interpolation so we don't introduce issues with unexpected property values.
+  #
+  # @see String#format
+  # @param fmt [String] The format string to interpolate.
+  # @param args [Array<String>] One or more strings to conditionally redact and interpolate into the format string.
+  #
+  # @return [String]
+  def format(fmt, *args)
+    fmt % args.map { |arg| @sensitive ? "[redacted]" : arg.to_s }
   end
 
   # Produces a String with the value formatted for display to a human.

@@ -27,6 +27,9 @@ gem "puppet", :path => File.dirname(__FILE__), :require => false
 gem "facter", *location_for(ENV['FACTER_LOCATION'] || ['> 2.0', '< 4'])
 gem "hiera", *location_for(ENV['HIERA_LOCATION'] || ['>= 2.0', '< 4'])
 gem "rake", "10.1.1", :require => false
+# Hiera has an unbound dependency on json_pure
+# json_pure 2.0.2+ officially requires Ruby >= 2.0, but should have specified that in 2.0
+gem 'json_pure', '~> 1.8', :require => false
 
 group(:development, :test) do
   gem "rspec", "~> 3.1", :require => false
@@ -77,9 +80,15 @@ data['gem_platform_dependencies'].each_pair do |gem_platform, info|
   next if gem_platform == 'x64-mingw32' && !x64_platform
   if bundle_deps = info['gem_runtime_dependencies']
     bundle_platform = bundle_platforms[gem_platform] or raise "Missing bundle_platform"
-    platform(bundle_platform.intern) do
+    if bundle_platform == "all"
       bundle_deps.each_pair do |name, version|
         gem(name, version, :require => false)
+      end
+    else
+      platform(bundle_platform.intern) do
+        bundle_deps.each_pair do |name, version|
+          gem(name, version, :require => false)
+        end
       end
     end
   end

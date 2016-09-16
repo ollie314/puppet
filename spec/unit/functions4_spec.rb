@@ -14,11 +14,11 @@ module FunctionAPISpecModule
     end
 
     def add_function(name, function)
-      set_entry(Puppet::Pops::Loader::Loader::TypedName.new(:function, name), function, __FILE__)
+      set_entry(Puppet::Pops::Loader::TypedName.new(:function, name), function, __FILE__)
     end
 
     def add_type(name, type)
-      set_entry(Puppet::Pops::Loader::Loader::TypedName.new(:type, name), type, __FILE__)
+      set_entry(Puppet::Pops::Loader::TypedName.new(:type, name), type, __FILE__)
     end
 
     def set_entry(typed_name, value, origin = nil)
@@ -111,6 +111,13 @@ describe 'the 4x function api' do
     expect do
       func.call({}, 10, 10, 10)
     end.to raise_error(ArgumentError, "'min' expects 2 arguments, got 3")
+  end
+
+  it 'correct dispatch is chosen when zero parameter dispatch exists' do
+    f = create_function_with_no_parameter_dispatch
+    func = f.new(:closure_scope, :loader)
+    expect(func.is_a?(Puppet::Functions::Function)).to be_truthy
+    expect(func.call({}, 1)).to eql(1)
   end
 
   it 'an error is raised if simple function-name and method are not matched' do
@@ -467,13 +474,34 @@ describe 'the 4x function api' do
         # evaluate a puppet call
         source = "testing::test(10) |$x| { $x+1 }"
         program = parser.parse_string(source, __FILE__)
-        Puppet::Pops::Adapters::LoaderAdapter.adapt(program.model).loader = the_loader
+        Puppet::Pops::Adapters::LoaderAdapter.expects(:loader_for_model_object).returns(the_loader)
         expect(parser.evaluate(scope, program)).to eql(11)
       end
     end
 
     context 'can use a loader when parsing types in function dispatch, and' do
       let(:parser) {  Puppet::Pops::Parser::EvaluatingParser.new }
+
+      it 'uses return_type to validate returned value' do
+        the_loader = loader()
+        here = get_binding(the_loader)
+        fc = eval(<<-CODE, here)
+          Puppet::Functions.create_function('testing::test') do
+            dispatch :test do
+              param 'Integer', :x
+              return_type 'String'
+            end
+            def test(x)
+              x
+            end
+          end
+        CODE
+        the_loader.add_function('testing::test', fc.new({}, the_loader))
+        program = parser.parse_string('testing::test(10)', __FILE__)
+        Puppet::Pops::Adapters::LoaderAdapter.expects(:loader_for_model_object).returns(the_loader)
+        expect { parser.evaluate({}, program) }.to raise_error(Puppet::Error,
+          /value returned from function 'test' has wrong type, expects a String value, got Integer/)
+      end
 
       it 'resolve a referenced Type alias' do
         the_loader = loader()
@@ -483,6 +511,7 @@ describe 'the 4x function api' do
           Puppet::Functions.create_function('testing::test') do
             dispatch :test do
               param 'MyAlias', :x
+              return_type 'MyAlias'
             end
             def test(x)
               x
@@ -491,7 +520,7 @@ describe 'the 4x function api' do
         CODE
         the_loader.add_function('testing::test', fc.new({}, the_loader))
         program = parser.parse_string('testing::test(10)', __FILE__)
-        Puppet::Pops::Adapters::LoaderAdapter.adapt(program.model).loader = the_loader
+        Puppet::Pops::Adapters::LoaderAdapter.expects(:loader_for_model_object).returns(the_loader)
         expect(parser.evaluate({}, program)).to eql(10)
       end
 
@@ -510,7 +539,7 @@ describe 'the 4x function api' do
         CODE
         the_loader.add_function('testing::test', fc.new({}, the_loader))
         program = parser.parse_string('testing::test(10)', __FILE__)
-        Puppet::Pops::Adapters::LoaderAdapter.adapt(program.model).loader = the_loader
+        Puppet::Pops::Adapters::LoaderAdapter.expects(:loader_for_model_object).returns(the_loader)
         expect { parser.evaluate({}, program) }.to raise_error(Puppet::Error, /parameter 'x' references an unresolved type 'MyAlias'/)
       end
 
@@ -532,7 +561,7 @@ describe 'the 4x function api' do
         CODE
         the_loader.add_function('testing::test', fc.new({}, the_loader))
         program = parser.parse_string('testing::test([10,20])', __FILE__)
-        Puppet::Pops::Adapters::LoaderAdapter.adapt(program.model).loader = the_loader
+        Puppet::Pops::Adapters::LoaderAdapter.expects(:loader_for_model_object).returns(the_loader)
         expect(parser.evaluate({}, program)).to eq([10,20])
       end
 
@@ -555,7 +584,7 @@ describe 'the 4x function api' do
         CODE
         the_loader.add_function('testing::test', fc.new({}, the_loader))
         program = parser.parse_string("testing::test({'x' => [10,20]})", __FILE__)
-        Puppet::Pops::Adapters::LoaderAdapter.adapt(program.model).loader = the_loader
+        Puppet::Pops::Adapters::LoaderAdapter.expects(:loader_for_model_object).returns(the_loader)
         expect(parser.evaluate({}, program)).to eq({'x' => [10,20]})
       end
 
@@ -577,7 +606,7 @@ describe 'the 4x function api' do
         CODE
         the_loader.add_function('testing::test', fc.new({}, the_loader))
         program = parser.parse_string("testing::test({'x' => {'y' => 'n'}})", __FILE__)
-        Puppet::Pops::Adapters::LoaderAdapter.adapt(program.model).loader = the_loader
+        Puppet::Pops::Adapters::LoaderAdapter.expects(:loader_for_model_object).returns(the_loader)
         expect(parser.evaluate({}, program)).to eq({'x' => {'y' => 'n'}})
       end
     end
@@ -913,6 +942,22 @@ describe 'the 4x function api' do
       end
       def test(x)
         yield(5,x) if block_given?
+      end
+    end
+  end
+
+  def create_function_with_no_parameter_dispatch
+    f = Puppet::Functions.create_function('test') do
+      dispatch :test_no_args do
+      end
+      dispatch :test_one_arg do
+        param 'Integer', :x
+      end
+      def test_no_args
+        0
+      end
+      def test_one_arg(x)
+        x
       end
     end
   end

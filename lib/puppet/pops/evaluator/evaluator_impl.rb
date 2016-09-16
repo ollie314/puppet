@@ -34,7 +34,6 @@ class EvaluatorImpl
   include Runtime3Support
   include ExternalSyntaxSupport
 
-  EMPTY_STRING = ''.freeze
   COMMA_SEPARATOR = ', '.freeze
 
   # Reference to Issues name space makes it easier to refer to issues
@@ -43,20 +42,26 @@ class EvaluatorImpl
   Issues = Issues
 
   def initialize
+    @@initialized ||= static_initialize
+
+    # Use null migration checker unless given in context
+    @migration_checker = Puppet.lookup(:migration_checker) { Migration::MigrationChecker.singleton }
+  end
+
+  # @api private
+  def static_initialize
     @@eval_visitor     ||= Visitor.new(self, "eval", 1, 1)
     @@lvalue_visitor   ||= Visitor.new(self, "lvalue", 1, 1)
     @@assign_visitor   ||= Visitor.new(self, "assign", 3, 3)
     @@string_visitor   ||= Visitor.new(self, "string", 1, 1)
 
-    @@type_calculator  ||= Types::TypeCalculator.new()
-    @@type_parser      ||= Types::TypeParser.new()
+    @@type_calculator  ||= Types::TypeCalculator.singleton
 
-    @@compare_operator     ||= CompareOperator.new()
-    @@relationship_operator ||= RelationshipOperator.new()
-
-    # Use null migration checker unless given in context
-    @migration_checker = (Puppet.lookup(:migration_checker) { Migration::MigrationChecker.new() })
+    @@compare_operator      ||= CompareOperator.new
+    @@relationship_operator ||= RelationshipOperator.new
+    true
   end
+  private :static_initialize
 
   # @api private
   def type_calculator
@@ -111,6 +116,10 @@ class EvaluatorImpl
       # PuppetError has the ability to wrap an exception, if so, use the wrapped exception's
       # call stack instead
       fail(Issues::RUNTIME_ERROR, target, {:detail => e.message}, e.original || e)
+
+    rescue StopIteration => e
+      # Ensure these are not rescued as StandardError
+      raise e
 
     rescue StandardError => e
       # All other errors, use its message and call stack
@@ -300,7 +309,7 @@ class EvaluatorImpl
   # A QualifiedReference (i.e. a  capitalized qualified name such as Foo, or Foo::Bar) evaluates to a PType
   #
   def eval_QualifiedReference(o, scope)
-    type = @@type_parser.interpret(o, scope)
+    type = Types::TypeParser.singleton.interpret(o, scope)
     fail(Issues::UNKNOWN_RESOURCE_TYPE, o, {:type_name => type.type_string }) if type.is_a?(Types::PTypeReferenceType)
     type
   end
@@ -402,7 +411,20 @@ class EvaluatorImpl
       begin
         if operator == :'%' && (left.is_a?(Float) || right.is_a?(Float))
           # Deny users the fun of seeing severe rounding errors and confusing results
-          fail(Issues::OPERATOR_NOT_APPLICABLE, left_o, {:operator => operator, :left_value => left})
+          fail(Issues::OPERATOR_NOT_APPLICABLE, left_o, {:operator => operator, :left_value => left}) if left.is_a?(Float)
+          fail(Issues::OPERATOR_NOT_APPLICABLE_WHEN, left_o, {:operator => operator, :left_value => left, :right_value => right})
+        end
+        if right.is_a?(Time::TimeData) && !left.is_a?(Time::TimeData)
+          if operator == :'+' || operator == :'*' && right.is_a?(Time::Timespan)
+            # Switch places. Let the TimeData do the arithmetic
+            x = left
+            left = right
+            right = x
+          elsif operator == :'-' && right.is_a?(Time::Timespan)
+            left = Time::Timespan.new((left * Time::NSECS_PER_SEC).to_i)
+          else
+            fail(Issues::OPERATOR_NOT_APPLICABLE_WHEN, left_o, {:operator => operator, :left_value => left, :right_value => right})
+          end
         end
         result = left.send(operator, right)
       rescue NoMethodError => e
@@ -451,7 +473,7 @@ class EvaluatorImpl
     keys = o.keys || []
     if left.is_a?(Types::PHostClassType)
       # Evaluate qualified references without errors no undefined types
-      keys = keys.map {|key| key.is_a?(Model::QualifiedReference) ? @@type_parser.interpret(key, scope) : evaluate(key, scope) }
+      keys = keys.map {|key| key.is_a?(Model::QualifiedReference) ? Types::TypeParser.singleton.interpret(key, scope) : evaluate(key, scope) }
     else
       keys = keys.map {|key| evaluate(key, scope) }
       # Resource[File] becomes File
@@ -613,9 +635,7 @@ class EvaluatorImpl
   # Evaluates all statements and produces the last evaluated value
   #
   def eval_BlockExpression o, scope
-    r = nil
-    o.statements.each {|s| r = evaluate(s, scope)}
-    r
+    o.statements.reduce(nil) {|memo, s| evaluate(s, scope)}
   end
 
   # Performs optimized search over case option values, lazily evaluating each
@@ -688,7 +708,16 @@ class EvaluatorImpl
   end
 
   def eval_Program(o, scope)
-    evaluate(o.body, scope)
+    begin
+      file = o.locator.file
+      line = 0
+      # Add stack frame for "top scope" logic. See Puppet::Pops::PuppetStack
+      return Puppet::Pops::PuppetStack.stack(file, line, self, 'evaluate', [o.body, scope])
+      #evaluate(o.body, scope)
+    rescue Puppet::Pops::Evaluator::PuppetStopIteration => ex
+      # breaking out of a file level program is not allowed
+      raise Puppet::ParseError.new("break() from context where this is illegal", ex.file, ex.line)
+    end
   end
 
   # Produces Array[PAnyType], an array of resource references
@@ -917,7 +946,7 @@ class EvaluatorImpl
   private :call_function_with_block
 
   def proc_from_lambda(lambda, scope)
-    closure = Closure.new(self, lambda, scope)
+    closure = Closure::Dynamic.new(self, lambda, scope)
     PuppetProc.new(closure) { |*args| closure.call(*args) }
   end
   private :proc_from_lambda

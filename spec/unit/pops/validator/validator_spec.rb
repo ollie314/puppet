@@ -16,9 +16,26 @@ describe "validating 4x" do
     acceptor
   end
 
-  it 'should raise error for illegal names' do
+  it 'should raise error for illegal class names' do
     expect(validate(parse('class aaa::_bbb {}'))).to have_issue(Puppet::Pops::Issues::ILLEGAL_DEFINITION_NAME)
     expect(validate(parse('class Aaa {}'))).to have_issue(Puppet::Pops::Issues::ILLEGAL_DEFINITION_NAME)
+    expect(validate(parse('class ::aaa {}'))).to have_issue(Puppet::Pops::Issues::ILLEGAL_DEFINITION_NAME)
+  end
+
+  it 'should raise error for illegal define names' do
+    expect(validate(parse('define aaa::_bbb {}'))).to have_issue(Puppet::Pops::Issues::ILLEGAL_DEFINITION_NAME)
+    expect(validate(parse('define Aaa {}'))).to have_issue(Puppet::Pops::Issues::ILLEGAL_DEFINITION_NAME)
+    expect(validate(parse('define ::aaa {}'))).to have_issue(Puppet::Pops::Issues::ILLEGAL_DEFINITION_NAME)
+  end
+
+  it 'should raise error for illegal function names' do
+    expect(validate(parse('function aaa::_bbb() {}'))).to have_issue(Puppet::Pops::Issues::ILLEGAL_DEFINITION_NAME)
+    expect(validate(parse('function Aaa() {}'))).to have_issue(Puppet::Pops::Issues::ILLEGAL_DEFINITION_NAME)
+    expect(validate(parse('function ::aaa() {}'))).to have_issue(Puppet::Pops::Issues::ILLEGAL_DEFINITION_NAME)
+  end
+
+  it 'should raise error for illegal type names' do
+    expect(validate(parse('type ::Aaa = Any'))).to have_issue(Puppet::Pops::Issues::ILLEGAL_DEFINITION_NAME)
   end
 
   it 'should raise error for illegal variable names' do
@@ -420,6 +437,29 @@ describe "validating 4x" do
       it 'raises errors when RHS is an AccessExpression with a name that is an invalid reference on LHS' do
         source = 'type IntegerArray = array[Integer]'
         expect(validate(parse(source))).to have_issue(Puppet::Pops::Issues::ILLEGAL_EXPRESSION)
+      end
+    end
+
+    context 'that are functions' do
+      it 'accepts typed parameters' do
+        source = <<-CODE
+          function f(Integer $a) { $a }
+        CODE
+        expect(validate(parse(source))).not_to have_any_issues
+      end
+
+      it 'accepts return types' do
+        source = <<-CODE
+          function f() >> Integer { 42 }
+        CODE
+        expect(validate(parse(source))).not_to have_any_issues
+      end
+
+      it 'accepts block with return types' do
+        source = <<-CODE
+          map([1,2]) |Integer $x| >> Integer { $x + 3 }
+        CODE
+        expect(validate(parse(source))).not_to have_any_issues
       end
     end
 

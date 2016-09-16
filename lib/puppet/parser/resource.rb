@@ -7,9 +7,6 @@ class Puppet::Parser::Resource < Puppet::Resource
   require 'puppet/parser/resource/param'
   require 'puppet/util/tagging'
   require 'puppet/parser/yaml_trimmer'
-  require 'puppet/resource/type_collection_helper'
-
-  include Puppet::Resource::TypeCollectionHelper
 
   include Puppet::Util
   include Puppet::Util::MethodHelper
@@ -75,12 +72,12 @@ class Puppet::Parser::Resource < Puppet::Resource
     return if evaluated?
     Puppet::Util::Profiler.profile("Evaluated resource #{self}", [:compiler, :evaluate_resource, self]) do
       @evaluated = true
-      if builtin?
+      if builtin_type?
         devfail "Cannot evaluate a builtin type (#{type})"
       elsif resource_type.nil?
         self.fail "Cannot find definition #{type}"
       else
-        finish(false) # Call finish but do not validate
+        finish_evaluation() # do not finish completely (as that destroys Sensitive data)
         resource_type.evaluate_code(self)
       end
     end
@@ -97,8 +94,18 @@ class Puppet::Parser::Resource < Puppet::Resource
     end
   end
 
-  # Do any finishing work on this object, called before evaluation or
-  # before storage/translation. The method does nothing the second time
+  # Finish the evaluation by assigning defaults and scope tags
+  # @api private
+  #
+  def finish_evaluation
+    return if @evaluation_finished
+    add_defaults
+    add_scope_tags
+    @evaluation_finished = true
+  end
+
+  # Do any finishing work on this object, called before
+  # storage/translation. The method does nothing the second time
   # it is called on the same resource.
   #
   # @param do_validate [Boolean] true if validation should be performed
@@ -107,8 +114,8 @@ class Puppet::Parser::Resource < Puppet::Resource
   def finish(do_validate = true)
     return if finished?
     @finished = true
-    add_defaults
-    add_scope_tags
+    finish_evaluation
+    replace_sensitive_data
     validate if do_validate
   end
 
@@ -149,7 +156,7 @@ class Puppet::Parser::Resource < Puppet::Resource
     # Test the resource scope, to make sure the resource is even allowed
     # to override.
     unless self.source.object_id == resource.source.object_id || resource.source.child_of?(self.source)
-      raise Puppet::ParseError.new("Only subclasses can override parameters", resource.line, resource.file)
+      raise Puppet::ParseError.new("Only subclasses can override parameters", resource.file, resource.line)
     end
     # Some of these might fail, but they'll fail in the way we want.
     resource.parameters.each do |name, param|
@@ -189,7 +196,9 @@ class Puppet::Parser::Resource < Puppet::Resource
       unless value.nil?
         case param.name
         when :before, :subscribe, :notify, :require
-          value = value.flatten if value.is_a?(Array)
+          if value.is_a?(Array)
+            value = value.flatten.reject {|v| v.nil? || v == :undef }
+          end
           result[param.name] = value
         else
           result[param.name] = value
@@ -256,7 +265,7 @@ class Puppet::Parser::Resource < Puppet::Resource
       scope.with_global_scope do |global_scope|
         cns_scope = global_scope.newscope(:source => self, :resource => self)
         cns.to_hash.each { |name, value| cns_scope[name.to_s] = value }
-  
+
         # evaluate mappings in that scope
         resource_type.arguments.keys.each do |name|
           if expr = blueprint[:mappings][name]
@@ -307,6 +316,15 @@ class Puppet::Parser::Resource < Puppet::Resource
     end
   end
 
+  def replace_sensitive_data
+    parameters.each_pair do |name, param|
+      if param.value.is_a?(Puppet::Pops::Types::PSensitiveType::Sensitive)
+        @sensitive_parameters << name
+        param.value = param.value.unwrap
+      end
+    end
+  end
+
   # Accept a parameter from an override.
   def override_parameter(param)
     # This can happen if the override is defining a new parameter, rather
@@ -324,7 +342,7 @@ class Puppet::Parser::Resource < Puppet::Resource
         msg += " at #{fields.join(":")}"
       end
       msg += "; cannot redefine"
-      raise Puppet::ParseError.new(msg, param.line, param.file)
+      raise Puppet::ParseError.new(msg, param.file, param.line)
     end
 
     # If we've gotten this far, we're allowed to override.
@@ -333,7 +351,7 @@ class Puppet::Parser::Resource < Puppet::Resource
     # syntax.  It's important that we use a copy of the new param instance
     # here, not the old one, and not the original new one, so that the source
     # is registered correctly for later overrides but the values aren't
-    # implcitly shared when multiple resources are overrriden at once (see
+    # implicitly shared when multiple resources are overridden at once (see
     # ticket #3556).
     if param.add
       param = param.dup

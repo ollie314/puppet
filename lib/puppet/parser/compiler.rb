@@ -4,7 +4,6 @@ require 'puppet/node'
 require 'puppet/resource/catalog'
 require 'puppet/util/errors'
 
-require 'puppet/resource/type_collection_helper'
 require 'puppet/loaders'
 require 'puppet/pops'
 
@@ -16,7 +15,6 @@ class Puppet::Parser::Compiler
   include Puppet::Util
   include Puppet::Util::Errors
   include Puppet::Util::MethodHelper
-  include Puppet::Resource::TypeCollectionHelper
   include Puppet::Pops::Evaluator::Runtime3Support
 
   def self.compile(node, code_id = nil)
@@ -27,7 +25,7 @@ class Puppet::Parser::Compiler
       errors.each { |e| Puppet.err(e) } if errors.size > 1
       errmsg = [
         "Compilation has been halted because: #{errors.first}",
-        "For more information, see https://docs.puppetlabs.com/puppet/latest/reference/environments.html",
+        "For more information, see https://docs.puppet.com/puppet/latest/reference/environments.html",
       ]
       raise(Puppet::Error, errmsg.join(' '))
     end
@@ -138,9 +136,6 @@ class Puppet::Parser::Compiler
       raise ArgumentError, "Application instances like '#{resource}' can only be contained within a Site"
     end
   end
-
-  # Do we use nodes found in the code, vs. the external node sources?
-  def_delegator :known_resource_types, :nodes?, :ast_nodes?
 
   # Store the fact that we've evaluated a class
   def add_class(name)
@@ -267,7 +262,7 @@ class Puppet::Parser::Compiler
   def evaluate_site
     # Has a site been defined? If not, do nothing but issue a warning.
     #
-    site = known_resource_types.find_site()
+    site = environment.known_resource_types.find_site()
     unless site
       on_empty_site()
       return
@@ -384,7 +379,7 @@ class Puppet::Parser::Compiler
     end
 
     hostclasses = classes.collect do |name|
-      scope.find_hostclass(name) or raise Puppet::Error, "Could not find class #{name} for #{node.name}"
+      environment.known_resource_types.find_hostclass(name) or raise Puppet::Error, "Could not find class #{name} for #{node.name}"
     end
 
     if class_parameters
@@ -507,7 +502,7 @@ class Puppet::Parser::Compiler
   end
 
   def evaluate_capability_mappings
-    krt = known_resource_types
+    krt = environment.known_resource_types
     krt.capability_mappings.each_value do |capability_mapping|
       args = capability_mapping.arguments
       component_ref = args['component']
@@ -540,15 +535,16 @@ class Puppet::Parser::Compiler
 
   # If ast nodes are enabled, then see if we can find and evaluate one.
   def evaluate_ast_node
-    return unless ast_nodes?
+    krt = environment.known_resource_types
+    return unless krt.nodes? #ast_nodes?
 
     # Now see if we can find the node.
     astnode = nil
     @node.names.each do |name|
-      break if astnode = known_resource_types.node(name.to_s.downcase)
+      break if astnode = krt.node(name.to_s.downcase)
     end
 
-    unless (astnode ||= known_resource_types.node("default"))
+    unless (astnode ||= krt.node("default"))
       raise Puppet::ParseError, "Could not find node statement with name 'default' or '#{node.names.join(", ")}'"
     end
 
@@ -589,6 +585,11 @@ class Puppet::Parser::Compiler
         urs = unevaluated_resources.each do |resource|
          begin
             resource.evaluate
+         rescue Puppet::Pops::Evaluator::PuppetStopIteration => detail
+           # needs to be handled specifically as the error has the file/line/position where this
+           # occurred rather than the resource
+           fail(Puppet::Pops::Issues::RUNTIME_ERROR, detail, {:detail => detail.message}, detail)
+
           rescue Puppet::Error => e
             # PuppetError has the ability to wrap an exception, if so, use the wrapped exception's
             # call stack instead
@@ -627,9 +628,10 @@ class Puppet::Parser::Compiler
 
   # Find and evaluate our main object, if possible.
   def evaluate_main
-    @main = known_resource_types.find_hostclass("") || known_resource_types.add(Puppet::Resource::Type.new(:hostclass, ""))
+    krt = environment.known_resource_types
+    @main = krt.find_hostclass('') || krt.add(Puppet::Resource::Type.new(:hostclass, ''))
     @topscope.source = @main
-    @main_resource = Puppet::Parser::Resource.new("class", :main, :scope => @topscope, :source => @main)
+    @main_resource = Puppet::Parser::Resource.new('class', :main, :scope => @topscope, :source => @main)
     @topscope.resource = @main_resource
 
     add_resource(@topscope, @main_resource)
@@ -762,7 +764,7 @@ class Puppet::Parser::Compiler
     #
     Puppet.override( @context_overrides , "For initializing compiler") do
       # THE MAGIC STARTS HERE ! This triggers parsing, loading etc.
-      @catalog.version = known_resource_types.version
+      @catalog.version = environment.known_resource_types.version
     end
 
     @catalog.add_resource(Puppet::Parser::Resource.new("stage", :main, :scope => @topscope))
@@ -795,7 +797,7 @@ class Puppet::Parser::Compiler
     # 2.2.2 some other terminus having stored a fact called "trusted" (most likely that would have failed earlier, but could
     #       be spoofed).
     #
-    # For the reasons above, the resurection of trusted node data with authenticated => true is only performed
+    # For the reasons above, the resurrection of trusted node data with authenticated => true is only performed
     # if user is running as root, else it is resurrected as unauthenticated.
     #
     trusted_param = node.parameters['trusted']
@@ -807,7 +809,7 @@ class Puppet::Parser::Compiler
         trusted_param = nil
       end
     else
-      # trusted may be boolean false if set as a fact by someone
+      # trusted may be Boolean false if set as a fact by someone
       trusted_param = nil
     end
 
@@ -863,16 +865,39 @@ class Puppet::Parser::Compiler
     scope = @topscope.class_scope(settings_type)
 
     env = environment
+    settings_hash = {}
     Puppet.settings.each do |name, setting|
       next if name == :name
-      scope[name.to_s] = env[name]
+      s_name = name.to_s
+      # Construct a hash (in anticipation it will be set in top scope under a name like $settings)
+      settings_hash[s_name] = transform_setting(env[name])
+      scope[s_name] = settings_hash[s_name]
     end
   end
+
+  def transform_setting(val)
+    case val
+    when Integer, Float, String, TrueClass, FalseClass, NilClass
+      val
+    when Symbol
+      val == :undef ? nil : val.to_s
+    when Array
+      val.map {|entry| transform_setting(entry) }
+    when Hash
+      result = {}
+      val.each {|k,v| result[transform_setting(k)] = transform_setting(v) }
+      result
+    else
+      # not ideal, but required as there are settings values that are special
+      val.to_s
+    end
+  end
+  private :transform_setting
 
   # Return an array of all of the unevaluated resources.  These will be definitions,
   # which need to get evaluated into native resources.
   def unevaluated_resources
-    # The order of these is significant for speed due to short-circuting
+    # The order of these is significant for speed due to short-circuiting
     resources.reject { |resource| resource.evaluated? or resource.virtual? or resource.builtin_type? }
   end
 

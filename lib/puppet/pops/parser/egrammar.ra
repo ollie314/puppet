@@ -8,7 +8,7 @@ token STRING DQPRE DQMID DQPOST
 token WORD
 token LBRACK  RBRACK LBRACE RBRACE SYMBOL FARROW COMMA TRUE
 token FALSE EQUALS APPENDS DELETES LESSEQUAL NOTEQUAL DOT COLON LLCOLLECT RRCOLLECT
-token QMARK LPAREN RPAREN ISEQUAL GREATEREQUAL GREATERTHAN LESSTHAN
+token QMARK WSLPAREN LPAREN RPAREN ISEQUAL GREATEREQUAL GREATERTHAN LESSTHAN
 token IF ELSE
 token DEFINE ELSIF VARIABLE CLASS INHERITS NODE BOOLEAN
 token NAME SEMIC CASE DEFAULT AT ATAT LCOLLECT RCOLLECT CLASSREF
@@ -30,7 +30,7 @@ prechigh
   left  HIGH
   left  SEMIC
   left  PIPE
-  left  LPAREN
+  left  LPAREN WSLPAREN
   left  RPAREN
   left  DOT
   nonassoc EPP_START
@@ -220,6 +220,7 @@ expression
   | expression OR           expression                 { result = val[0].or  val[2]       ; loc result, val[1] }
   | expression QMARK selector_entries                  { result = val[0].select(*val[2])  ; loc result, val[0] }
   |            LPAREN       assignment RPAREN          { result = val[1].paren()          ; loc result, val[0] }
+  |            WSLPAREN     assignment RPAREN          { result = val[1].paren()          ; loc result, val[0] }
 
 bracketed_expression
   : expression LBRACK       expressions endcomma RBRACK =LBRACK { result = val[0][*val[2]]         ; loc result, val[0], val[4] }
@@ -309,13 +310,17 @@ call_method_with_lambda_expression
         result = val[0].dot(Factory.fqn(val[2][:value]))
         loc result, val[1], val[2]
       }
+    | expression DOT TYPE {
+        result = val[0].dot(Factory.fqn(val[2][:value]))
+        loc result, val[1], val[2]
+      }
 
 #---LAMBDA
 #
 lambda
-  : lambda_parameter_list lambda_rest {
-      result = Factory.LAMBDA(val[0][:value], val[1][:value])
-      loc result, val[0][:start], val[1][:end]
+  : lambda_parameter_list opt_return_type lambda_rest {
+      result = Factory.LAMBDA(val[0][:value], val[2][:value], val[1])
+      loc result, val[0][:start], val[2][:end]
     }
 
 lambda_rest
@@ -630,10 +635,15 @@ node_definition_expression
 #---FUNCTION DEFINITION
 #
 function_definition
-  : FUNCTION classname parameter_list LBRACE opt_statements RBRACE {
-      result = add_definition(Factory.FUNCTION(val[1][:value], val[2], val[4]))
-      loc result, val[0], val[5]
+  : FUNCTION classname parameter_list opt_return_type LBRACE opt_statements RBRACE {
+      result = add_definition(Factory.FUNCTION(val[1][:value], val[2], val[5], val[3]))
+      loc result, val[0], val[6]
     }
+
+opt_return_type
+  : RSHIFT type { result = val[1] ; loc result, val[0], val[1] }
+  | RSHIFT type LBRACK expressions RBRACK { result = val[1][*val[3]] ; loc result, val[0], val[4] }
+  | nil
 
 #---NAMES AND PARAMETERS COMMON TO SEVERAL RULES
 #   Produces String
@@ -650,9 +660,11 @@ classname
 
 # Produces Array<Model::Parameter>
 parameter_list
-  : nil                               { result = [] }
-  | LPAREN  RPAREN                    { result = [] }
-  | LPAREN parameters endcomma RPAREN { result = val[1] }
+  : nil                                   { result = [] }
+  | LPAREN  RPAREN                        { result = [] }
+  | WSLPAREN  RPAREN                      { result = [] }
+  | LPAREN parameters endcomma RPAREN     { result = val[1] }
+  | WSLPAREN parameters endcomma RPAREN   { result = val[1] }
 
 # Produces Array<Model::Parameter>
 parameters

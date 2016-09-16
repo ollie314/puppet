@@ -10,10 +10,15 @@ module Puppet
   #
   # @api public
   module Pops
+    EMPTY_HASH = {}.freeze
+    EMPTY_ARRAY = [].freeze
+    EMPTY_STRING = ''.freeze
+
     require 'semantic'
 
     require 'puppet/pops/patterns'
     require 'puppet/pops/utils'
+    require 'puppet/pops/puppet_stack'
 
     require 'puppet/pops/adaptable'
     require 'puppet/pops/adapters'
@@ -35,6 +40,9 @@ module Puppet
     require 'puppet/pops/lookup/explainer'
 
     require 'puppet/pops/model/model'
+
+    require 'puppet/pops/time/timespan'
+    require 'puppet/pops/time/timestamp'
 
     # (the Types module initializes itself)
     require 'puppet/pops/types/types'
@@ -81,10 +89,14 @@ module Puppet
       end
     end
 
+    module Resource
+      require 'puppet/pops/resource/resource_type_impl'
+    end
     module Evaluator
       require 'puppet/pops/evaluator/literal_evaluator'
       require 'puppet/pops/evaluator/callable_signature'
       require 'puppet/pops/evaluator/runtime3_converter'
+      require 'puppet/pops/evaluator/runtime3_resource_support'
       require 'puppet/pops/evaluator/runtime3_support'
       require 'puppet/pops/evaluator/evaluator_impl'
       require 'puppet/pops/evaluator/epp_evaluator'
@@ -125,6 +137,10 @@ module Puppet
 
     module Migration
       require 'puppet/pops/migration/migration_checker'
+    end
+
+    module Serialization
+      require 'puppet/pops/serialization'
     end
   end
 

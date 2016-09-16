@@ -56,7 +56,7 @@ Puppet::Type.type(:user).provide :aix, :parent => Puppet::Provider::AixObject do
   # Valid attributes to be managed by this provider.
   # It is a list with of hash
   #  :aix_attr      AIX command attribute name
-  #  :puppet_prop   Puppet propertie name
+  #  :puppet_prop   Puppet property name
   #  :to            Method to adapt puppet property to aix command value. Optional.
   #  :from          Method to adapt aix command value to puppet property. Optional
   self.attribute_mapping = [
@@ -279,6 +279,7 @@ Puppet::Type.type(:user).provide :aix, :parent => Puppet::Provider::AixObject do
 
   def managed_attribute_keys(hash)
     managed_attributes ||= @resource.original_parameters[:attributes] || hash.keys.map{|k| k.to_s}
+    managed_attributes = [managed_attributes] unless managed_attributes.is_a?(Array)
     managed_attributes.map {|attr| key, value = attr.split("="); key.strip.to_sym}
   end
 
@@ -289,7 +290,7 @@ Puppet::Type.type(:user).provide :aix, :parent => Puppet::Provider::AixObject do
   end
 
   def filter_attributes(hash)
-    # Return only managed attributtes.
+    # Return only managed attributes.
     managed_keys = managed_attribute_keys(hash)
     results = hash.select {
         |k,v| should_include?(k, managed_keys)

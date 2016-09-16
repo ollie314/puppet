@@ -69,6 +69,10 @@ class TypeFormatter
   end
 
 
+  def append_default
+    @bld << 'default'
+  end
+
   def append_string(t)
     if @ruby && t.is_a?(PAnyType)
       @ruby = false
@@ -128,6 +132,9 @@ class TypeFormatter
 
   # @api private
   def string_PNumericType(_) ; @bld << 'Numeric' ; end
+
+  # @api private
+  def string_PBinaryType(_)  ; @bld << 'Binary' ; end
 
   # @api private
   def string_PIntegerType(t)
@@ -194,6 +201,32 @@ class TypeFormatter
   end
 
   # @api private
+  def string_PTimestampType(t)
+    min = t.from
+    max = t.to
+    append_array('Timestamp', min.nil? && max.nil?) do
+      min.nil? ? append_default : append_string(min)
+      unless max.nil? || max == min
+        @bld << COMMA_SEP
+        append_string(max)
+      end
+    end
+  end
+
+  # @api private
+  def string_PTimespanType(t)
+    min = t.from
+    max = t.to
+    append_array('Timespan', min.nil? && max.nil?) do
+      min.nil? ? append_default : append_string(min)
+      unless max.nil? || max == min
+        @bld << COMMA_SEP
+        append_string(max)
+      end
+    end
+  end
+
+  # @api private
   def string_PTupleType(t)
     append_array('Tuple', t.types.empty?) do
       append_strings(t.types, true)
@@ -204,21 +237,35 @@ class TypeFormatter
 
   # @api private
   def string_PCallableType(t)
-    append_array('Callable', t.param_types.nil?) do
-      # translate to string, and skip Unit types
-      append_strings(t.param_types.types.reject {|t2| t2.class == PUnitType }, true)
-
-      if t.param_types.types.empty?
-        append_strings([0, 0], true)
+    if t.return_type.nil?
+      append_array('Callable', t.param_types.nil?) { append_callable_params(t) }
+    else
+      if t.param_types.nil?
+        append_array('Callable', false) { append_strings([[], t.return_type], false) }
       else
-        append_elements(range_array_part(t.param_types.size_type), true)
+        append_array('Callable', false) do
+          append_array('', false) { append_callable_params(t) }
+          @bld << COMMA_SEP
+          append_string(t.return_type)
+        end
       end
-
-      # Add block T last (after min, max) if present)
-      #
-      append_strings([t.block_type], true) unless t.block_type.nil?
-      chomp_list
     end
+  end
+
+  def append_callable_params(t)
+    # translate to string, and skip Unit types
+    append_strings(t.param_types.types.reject {|t2| t2.class == PUnitType }, true)
+
+    if t.param_types.types.empty?
+      append_strings([0, 0], true)
+    else
+      append_elements(range_array_part(t.param_types.size_type), true)
+    end
+
+    # Add block T last (after min, max) if present)
+    #
+    append_strings([t.block_type], true) unless t.block_type.nil?
+    chomp_list
   end
 
   # @api private
@@ -335,42 +382,45 @@ class TypeFormatter
   end
 
   # @api private
+  def string_PTypeSetType(t)
+    append_array('TypeSet') do
+      append_hash(t.i12n_hash.each, proc { |k| @bld << symbolic_key(k) }) do |k,v|
+        case k
+        when KEY_TYPES
+          old_ts = @type_set
+          @type_set = t
+          begin
+            append_hash(v, proc { |tk| @bld << symbolic_key(tk) }) do |tk, tv|
+              if tv.is_a?(Hash)
+                append_object_hash(tv)
+              else
+                append_string(tv)
+              end
+            end
+          rescue
+            @type_set = old_ts
+          end
+        when KEY_REFERENCES
+          append_hash(v, proc { |tk| @bld << symbolic_key(tk) })
+        else
+          append_string(v)
+        end
+      end
+    end
+  end
+
+  # @api private
   def string_PObjectType(t)
     if @expanded
-      begin
-        @expanded = false
-        append_array('Object') do
-          append_hash(t.i12n_hash.each, proc { |k| @bld << symbolic_key(k) }) do |k,v|
-            case k
-            when PObjectType::KEY_ATTRIBUTES, PObjectType::KEY_FUNCTIONS
-              # Types might need to be output as type references
-              append_hash(v) do |_, fv|
-                if fv.is_a?(Hash)
-                  append_hash(fv, proc { |fak| @bld << symbolic_key(fak) }) do |fak,fav|
-                    case fak
-                    when PObjectType::KEY_KIND
-                      @bld << fav
-                    else
-                      append_string(fav)
-                    end
-                  end
-                else
-                  append_string(fv)
-                end
-              end
-            when PObjectType::KEY_EQUALITY
-              append_array('') { append_strings(v) } if v.is_a?(Array)
-            else
-              append_string(v)
-            end
-          end
-        end
-      ensure
-        @expanded = true
-      end
+      append_object_hash(t.i12n_hash(@type_set.nil? || !@type_set.defines_type?(t)))
     else
-      @bld << t.label
+      @bld << (@type_set ? @type_set.name_for(t) : t.label)
     end
+  end
+
+  # @api private
+  def string_PSensitiveType(t)
+    append_array('Sensitive') { append_string(t.type) }
   end
 
   # @api private
@@ -392,10 +442,18 @@ class TypeFormatter
       @guard ||= RecursionGuard.new
       expand = (@guard.add_this(t) & RecursionGuard::SELF_RECURSION_IN_THIS) == 0
     end
-    @bld << t.name
-    if expand
-      @bld << ' = '
-      append_string(t.resolved_type)
+    if @type_set.nil?
+      @bld << t.name
+      if expand
+        @bld << ' = '
+        append_string(t.resolved_type)
+      end
+    else
+      if expand && @type_set.defines_type?(t)
+        append_string(t.resolved_type)
+      else
+        @bld << @type_set.name_for(t)
+      end
     end
   end
 
@@ -434,8 +492,7 @@ class TypeFormatter
   # @api private
   def string_String(t)
     # Use single qoute on strings that does not contain single quotes, control characters, or backslashes.
-    # TODO: This should move to StringConverter when this formatter is changed to take advantage of it
-    @bld << (t.ascii_only? && (t =~ /^(?:'|\p{Cntrl}|\\)$/).nil? ? "'#{t}'" : t.inspect)
+    @bld << StringConverter.singleton.puppet_quote(t)
   end
 
   # @api private
@@ -449,6 +506,12 @@ class TypeFormatter
 
   # @api private
   def string_VersionRange(t) ; @bld << "'#{t}'"  ; end
+
+  # @api private
+  def string_Timespan(t)    ; @bld << "'#{t}'"  ; end
+
+  # @api private
+  def string_Timestamp(t)    ; @bld << "'#{t}'"  ; end
 
   # Debugging to_s to reduce the amount of output
   def to_s
@@ -488,6 +551,40 @@ class TypeFormatter
 
   def range_array_part(t)
     t.nil? || t.unbounded? ? EMPTY_ARRAY : [t.from.nil? ? 'default' : t.from.to_s , t.to.nil? ? 'default' : t.to.to_s ]
+  end
+
+  def append_object_hash(hash)
+    begin
+      @expanded = false
+      append_array('Object') do
+        append_hash(hash, proc { |k| @bld << symbolic_key(k) }) do |k,v|
+          case k
+          when KEY_ATTRIBUTES, KEY_FUNCTIONS
+            # Types might need to be output as type references
+            append_hash(v) do |_, fv|
+              if fv.is_a?(Hash)
+                append_hash(fv, proc { |fak| @bld << symbolic_key(fak) }) do |fak,fav|
+                  case fak
+                  when KEY_KIND
+                    @bld << fav
+                  else
+                    append_string(fav)
+                  end
+                end
+              else
+                append_string(fv)
+              end
+            end
+          when KEY_EQUALITY
+            append_array('') { append_strings(v) } if v.is_a?(Array)
+          else
+            append_string(v)
+          end
+        end
+      end
+    ensure
+      @expanded = true
+    end
   end
 
   def append_elements(array, to_be_continued = false)

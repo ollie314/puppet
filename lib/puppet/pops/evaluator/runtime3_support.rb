@@ -59,10 +59,18 @@ module Runtime3Support
     # The error is not specific enough to allow catching it - need to check the actual message text.
     # TODO: Improve the messy implementation in Scope.
     #
+    if name == "server_facts"
+      if Puppet[:trusted_server_facts] || Puppet[:strict] == :error
+        fail(Issues::ILLEGAL_RESERVED_ASSIGNMENT, o, {:name => name} )
+      elsif Puppet[:strict] == :warning
+        file, line = extract_file_line(o)
+        msg = "Assignment to $server_facts is deprecated"
+        Puppet.warn_once(:deprecation, msg, msg, file, line)
+      end
+    end
+
     if scope.bound?(name)
       if Puppet::Parser::Scope::RESERVED_VARIABLE_NAMES.include?(name)
-        fail(Issues::ILLEGAL_RESERVED_ASSIGNMENT, o, {:name => name} )
-      elsif name == "server_facts" && Puppet[:trusted_server_facts]
         fail(Issues::ILLEGAL_RESERVED_ASSIGNMENT, o, {:name => name} )
       else
         fail(Issues::ILLEGAL_REASSIGNMENT, o, {:name => name} )
@@ -82,7 +90,7 @@ module Runtime3Support
       # Must convert :undef back to nil - this can happen when an undefined variable is used in a
       # parameter's default value expression - there nil must be :undef to work with the rest of 3x.
       # Now that the value comes back to 4x it is changed to nil.
-      return :undef == x ? nil : x
+      return :undef.equal?(x) ? nil : x
     }
     # It is always ok to reference numeric variables even if they are not assigned. They are always undef
     # if not set by a match expression.
@@ -203,6 +211,7 @@ module Runtime3Support
     else
       # transform into the wonderful String representation in 3x
       type, title = Runtime3Converter.instance.catalog_type_to_split_type_title(source)
+      type = Runtime3ResourceSupport.find_resource_type(scope, type) unless type == 'class' || type == 'node'
       source_resource = Puppet::Resource.new(type, title)
     end
     if target.is_a?(Collectors::AbstractCollector)
@@ -211,6 +220,7 @@ module Runtime3Support
     else
       # transform into the wonderful String representation in 3x
       type, title = Runtime3Converter.instance.catalog_type_to_split_type_title(target)
+      type = Runtime3ResourceSupport.find_resource_type(scope, type) unless type == 'class' || type == 'node'
       target_resource = Puppet::Resource.new(type, title)
     end
     # Add the relationship to the compiler for later evaluation.
@@ -238,7 +248,7 @@ module Runtime3Support
   # @param name [String] the name of the function (without the 'function_' prefix used by scope)
   # @param args [Array] arguments, may be empty
   # @param scope [Object] the (runtime specific) scope where evaluation takes place
-  # @raise ArgumentError 'unknown function' if the function does not exist
+  # @raise [ArgumentError] 'unknown function' if the function does not exist
   #
   def external_call_function(name, args, scope, &block)
     # Call via 4x API if the function exists there
@@ -266,10 +276,12 @@ module Runtime3Support
   end
 
   def call_function(name, args, o, scope, &block)
-    loader = Adapters::LoaderAdapter.loader_for_model_object(o, scope)
+    file, line = extract_file_line(o)
+    loader = Adapters::LoaderAdapter.loader_for_model_object(o, scope, file)
     if loader && func = loader.load(:function, name)
       Puppet::Util::Profiler.profile(name, [:functions, name]) do
-        return func.call(scope, *args, &block)
+        # Add stack frame when calling. See Puppet::Pops::PuppetStack
+        return Kernel.eval('func.call(scope, *args, &block)', Kernel.binding, file || '', line)
       end
     end
     # Call via 3x API if function exists there
@@ -278,7 +290,7 @@ module Runtime3Support
     # Arguments must be mapped since functions are unaware of the new and magical creatures in 4x.
     # NOTE: Passing an empty string last converts nil/:undef to empty string
     mapped_args = Runtime3Converter.map_args(args, scope, '')
-    result = scope.send("function_#{name}", mapped_args, &block)
+    result = Puppet::Pops::PuppetStack.stack(file, line, scope, "function_#{name}", [mapped_args], &block)
     # Prevent non r-value functions from leaking their result (they are not written to care about this)
     Puppet::Parser::Functions.rvalue?(name) ? result : nil
   end
@@ -298,48 +310,14 @@ module Runtime3Support
     Runtime3Converter.convert(value, scope, undef_value)
   end
 
-  CLASS_STRING = 'class'.freeze
-
   def create_resources(o, scope, virtual, exported, type_name, resource_titles, evaluated_parameters)
-
-    # TODO: Unknown resource causes creation of Resource to fail with ArgumentError, should give
-    # a proper Issue. Now the result is "Error while evaluating a Resource Statement" with the message
-    # from the raised exception. (It may be good enough).
-
-
-    # resolve in scope.
-    fully_qualified_type, resource_titles = scope.resolve_type_and_titles(type_name, resource_titles)
-
     # Not 100% accurate as this is the resource expression location and each title is processed separately
     # The titles are however the result of evaluation and they have no location at this point (an array
     # of positions for the source expressions are required for this to work).
     # TODO: Revisit and possible improve the accuracy.
     #
     file, line = extract_file_line(o)
-    # Build a resource for each title
-    resource_titles.map do |resource_title|
-        resource = Puppet::Parser::Resource.new(
-          fully_qualified_type, resource_title,
-          :parameters => evaluated_parameters,
-          :file => file,
-          :line => line,
-          :exported => exported,
-          :virtual => virtual,
-          # WTF is this? Which source is this? The file? The name of the context ?
-          :source => scope.source,
-          :scope => scope,
-          :strict => true
-        )
-
-        if resource.resource_type.is_a? Puppet::Resource::Type
-          resource.resource_type.instantiate_resource(scope, resource)
-        end
-        scope.compiler.add_resource(scope, resource)
-        scope.compiler.evaluate_classes([resource_title], scope, false) if fully_qualified_type == CLASS_STRING
-        # Turn the resource into a PType (a reference to a resource type)
-        # weed out nil's
-        resource_to_ptype(resource)
-    end
+    Runtime3ResourceSupport.create_resources(file, line, scope, virtual, exported, type_name, resource_titles, evaluated_parameters)
   end
 
   # Defines default parameters for a type with the given name.
@@ -375,8 +353,9 @@ module Runtime3Support
       unless r.is_a?(Types::PResourceType) && r.type_name != 'class'
         fail(Issues::ILLEGAL_OVERRIDEN_TYPE, o, {:actual => r} )
       end
+      t = Runtime3ResourceSupport.find_resource_type(scope, r.type_name)
       resource = Puppet::Parser::Resource.new(
-      r.type_name, r.title,
+        t, r.title,
         :parameters => evaluated_parameters,
         :file => file,
         :line => line,
@@ -465,14 +444,21 @@ module Runtime3Support
   end
 
   def extract_file_line(o)
-    source_pos = Utils.find_closest_positioned(o)
-    return [nil, -1] unless source_pos
-    [source_pos.locator.file, source_pos.line]
+    positioned = find_closest_with_offset(o)
+    unless positioned.nil?
+      locator = Adapters::SourcePosAdapter.find_locator(positioned)
+      return [locator.file, locator.line_for_offset(positioned.offset)] unless locator.nil?
+    end
+    [nil, -1]
   end
 
-  def find_closest_positioned(o)
-    return nil if o.nil? || o.is_a?(Model::Program)
-    o.offset.nil? ? find_closest_positioned(o.eContainer) : Adapters::SourcePosAdapter.adapt(o)
+  def find_closest_with_offset(o)
+    if o.offset.nil?
+      c = o.eContainer
+      c.nil? ? nil : find_closest_with_offset(c)
+    else
+      o
+    end
   end
 
   # Creates a diagnostic producer
@@ -505,7 +491,6 @@ module Runtime3Support
       elsif Puppet[:strict] == :off
         p[Issues::UNKNOWN_VARIABLE] = :ignore
       else
-        Puppet[:strict_variables]
         p[Issues::UNKNOWN_VARIABLE] = Puppet[:strict]
       end
 

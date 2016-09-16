@@ -28,7 +28,12 @@ Puppet::Type.type(:package).provide :dnf, :parent => :yum do
       end
   end
 
-  defaultfor :operatingsystem => :fedora, :operatingsystemmajrelease => ['22', '23']
+  defaultfor :operatingsystem => :fedora, :operatingsystemmajrelease => ['22', '23', '24']
+
+  def self.update_command
+    # In DNF, update is deprecated for upgrade
+    'upgrade'
+  end
 
   # The value to pass to DNF as its error output level.
   # DNF differs from Yum slightly with regards to error outputting.

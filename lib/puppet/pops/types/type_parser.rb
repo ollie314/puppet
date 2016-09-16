@@ -8,6 +8,10 @@
 module Puppet::Pops
 module Types
 class TypeParser
+  def self.singleton
+    @singleton ||= TypeParser.new
+  end
+
   # @api public
   def initialize
     @parser = Parser::Parser.new
@@ -33,7 +37,11 @@ class TypeParser
     interpret(model.current.body, context)
   end
 
-  # @api private
+  # @param ast [Puppet::Pops::Model::PopsObject] the ast to interpret
+  # @param context [Puppet::Parser::Scope,Loader::Loader, nil] scope or loader to use when loading type aliases
+  # @return [PAnyType] a specialization of the PAnyType representing the type.
+  #
+  # @api public
   def interpret(ast, context)
     result = @type_transformer.visit_this_1(self, ast, context)
     raise_invalid_type_specification_error(ast) unless result.is_a?(PAnyType)
@@ -126,12 +134,14 @@ class TypeParser
   # @api private
   def self.type_map
     @type_map ||= {
-       'integer'       => TypeFactory.integer,
-       'float'         => TypeFactory.float,
+        'integer'      => TypeFactory.integer,
+        'float'        => TypeFactory.float,
         'numeric'      => TypeFactory.numeric,
         'iterable'     => TypeFactory.iterable,
         'iterator'     => TypeFactory.iterator,
         'string'       => TypeFactory.string,
+        'binary'       => TypeFactory.binary,
+        'sensitive'    => TypeFactory.sensitive,
         'enum'         => TypeFactory.enum,
         'boolean'      => TypeFactory.boolean,
         'pattern'      => TypeFactory.pattern,
@@ -157,10 +167,13 @@ class TypeParser
         'object'       => TypeFactory.object,
         'typealias'    => TypeFactory.type_alias,
         'typereference' => TypeFactory.type_reference,
-      # A generic callable as opposed to one that does not accept arguments
+        'typeset'      => TypeFactory.type_set,
+         # A generic callable as opposed to one that does not accept arguments
         'callable'     => TypeFactory.all_callables,
         'semver'       => TypeFactory.sem_ver,
-        'semverrange'  => TypeFactory.sem_ver_range
+        'semverrange'  => TypeFactory.sem_ver_range,
+        'timestamp'    => TypeFactory.timestamp,
+        'timespan'     => TypeFactory.timespan
     }
   end
 
@@ -345,6 +358,9 @@ class TypeParser
 
     when 'callable'
       # 1..m parameters being types (last three optionally integer or literal default, and a callable)
+      if parameters.size > 1 && parameters[0].is_a?(Array)
+        raise_invalid_parameters_error('callable', '2 when first parameter is an array', parameters.size) unless parameters.size == 2
+      end
       TypeFactory.callable(*parameters)
 
     when 'struct'
@@ -371,6 +387,10 @@ class TypeParser
     when 'object'
       raise_invalid_parameters_error('Object', 1, parameters.size) unless parameters.size == 1
       TypeFactory.object(parameters[0])
+
+    when 'typeset'
+      raise_invalid_parameters_error('Object', 1, parameters.size) unless parameters.size == 1
+      TypeFactory.type_set(parameters[0])
 
     when 'iterable'
       if parameters.size != 1
@@ -419,6 +439,17 @@ class TypeParser
       end
       TypeFactory.string(size_type)
 
+    when 'sensitive'
+      if parameters.size == 0
+        TypeFactory.sensitive
+      elsif parameters.size == 1
+        param = parameters[0]
+        assert_type(ast, param)
+        TypeFactory.sensitive(param)
+      else
+        raise_invalid_parameters_error('Sensitive', '0 to 1', parameters.size)
+      end
+
     when 'optional'
       if parameters.size != 1
         raise_invalid_parameters_error('Optional', 1, parameters.size)
@@ -453,6 +484,14 @@ class TypeParser
       raise_invalid_parameters_error('Runtime', '2', parameters.size) unless parameters.size == 2
       TypeFactory.runtime(*parameters)
 
+    when 'timespan'
+      raise_invalid_parameters_error('Timespan', '0 to 2', parameters.size) unless parameters.size <= 2
+      TypeFactory.timespan(*parameters)
+
+    when 'timestamp'
+      raise_invalid_parameters_error('Timestamp', '0 to 2', parameters.size) unless parameters.size <= 2
+      TypeFactory.timestamp(*parameters)
+
     when 'semver'
       raise_invalid_parameters_error('SemVer', '1 or more', parameters.size) unless parameters.size >= 1
       TypeFactory.sem_ver(*parameters)
@@ -468,7 +507,7 @@ class TypeParser
       if type.nil?
         TypeFactory.type_reference(original_text_of(qref.eContainer))
       elsif type.is_a?(PResourceType)
-        raise_invalid_parameters_error(type_name, 1, parameters.size) unless parameters.size == 1
+        raise_invalid_parameters_error(qref.cased_value, 1, parameters.size) unless parameters.size == 1
         TypeFactory.resource(type.type_name, parameters[0])
       else
         # Must be a type alias. They can't use parameters (yet)
